@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cedula-uy-pdf-sign"
+version = "0.1.0"
+authors = [
+  { name = "Carlos A. Planchón", email = "carlosandresplanchonprestes@gmail.com" }
+]
+description = "Sign PDFs with Uruguayan national ID (cédula) via PKCS#11, generating cryptographic PDF signatures visually compatible with signatures produced by the official Uruguayan cédula software. Not affiliated with AGESIC."
+readme = "README.md"
+requires-python = ">=3.11"
+
+license = "MIT"
+license-files = ["LICENSE"]
+
+keywords = ["pdf", "firma", "pkcs11", "uruguay", "agesic", "cedula", "signature", "electronic"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security :: Cryptography",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "cryptography>=46.0.5",
+    "pyhanko[pkcs11]>=0.34.1",
+    "python-pkcs11>=0.9.3",
+    "reportlab>=4.4.10",
+    "typer>=0.24.1",
+]
+
+[project.urls]
+Repository = "https://github.com/carlosplanchon/cedula-uy-pdf-sign"
+
+[project.scripts]
+firmauy = "cedula_uy_pdf_sign.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
