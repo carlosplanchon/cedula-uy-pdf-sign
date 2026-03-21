@@ -94,7 +94,7 @@ firmauy sign-batch --help
 ### Sign a single PDF
 
 ```bash
-firmauy input.pdf output_signed.pdf
+firmauy sign input.pdf output_signed.pdf
 ```
 
 The tool will prompt for the PKCS#11 PIN interactively.
@@ -102,13 +102,13 @@ The tool will prompt for the PKCS#11 PIN interactively.
 ### Custom signature position
 
 ```bash
-firmauy input.pdf output_signed.pdf --x1 20 --y1 20 --x2 225 --y2 90
+firmauy sign input.pdf output_signed.pdf --x1 20 --y1 20 --x2 225 --y2 90
 ```
 
 ### Specify page (0-indexed, -1 = last page)
 
 ```bash
-firmauy input.pdf output_signed.pdf --page 0
+firmauy sign input.pdf output_signed.pdf --page 0
 ```
 
 ### Non-interactive PIN
@@ -117,13 +117,13 @@ PIN can be supplied without an interactive prompt via `--pin-source`:
 
 ```bash
 # From an environment variable
-firmauy input.pdf output_signed.pdf --pin-source env --pin-env-var MY_PIN
+firmauy sign input.pdf output_signed.pdf --pin-source env --pin-env-var MY_PIN
 
 # From stdin
-echo "1234" | firmauy input.pdf output_signed.pdf --pin-source stdin
+echo "1234" | firmauy sign input.pdf output_signed.pdf --pin-source stdin
 
 # From a file descriptor
-firmauy input.pdf output_signed.pdf --pin-source fd --pin-fd 3
+firmauy sign input.pdf output_signed.pdf --pin-source fd --pin-fd 3
 ```
 
 ⚠️ Avoid exposing the PIN in shell history or process lists.
