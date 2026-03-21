@@ -49,7 +49,7 @@ It does **not**:
 
 ## Arch Linux (recommended)
 
-This tool is primarily designed for Arch Linux (BTW).
+This tool is primarily designed for Arch Linux.
 
 ### 1. Install smart card stack
 
