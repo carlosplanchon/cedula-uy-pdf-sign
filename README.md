@@ -21,6 +21,8 @@ While it uses standard cryptographic mechanisms and aims to align with
 Uruguayan digital signature practices, **it should not be assumed to be valid
 for legal or regulatory use without independent verification**.
 
+Users are solely responsible for ensuring that the generated signatures meet
+any legal or regulatory requirements applicable to their use case.
 
 ## Scope
 
