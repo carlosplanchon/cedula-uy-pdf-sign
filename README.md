@@ -194,4 +194,4 @@ Bug reports, questions, and pull requests are welcome. Feel free to open an issu
 
 ## License
 
-This project is licensed under the Apache License 2.0, which includes an explicit patent grant.
+This project is licensed under the Apache License 2.0.
