@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Carlos Andrés Planchón Prestes
+# Licensed under the Apache License, Version 2.0
 
 import tempfile
 from datetime import datetime

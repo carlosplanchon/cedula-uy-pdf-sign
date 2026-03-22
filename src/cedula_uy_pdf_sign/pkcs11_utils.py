@@ -1,3 +1,6 @@
+# Copyright 2026 Carlos Andrés Planchón Prestes
+# Licensed under the Apache License, Version 2.0
+
 import re
 from datetime import datetime, timezone
 from pathlib import Path

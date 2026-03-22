@@ -1,3 +1,6 @@
+# Copyright 2026 Carlos Andrés Planchón Prestes
+# Licensed under the Apache License, Version 2.0
+
 DEFAULT_PKCS11_LIB = "/usr/lib/pkcs11/libgclib.so"
 DEFAULT_TIMEZONE = "America/Montevideo"
 
