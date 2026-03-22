@@ -90,6 +90,7 @@ The CLI tool is invoked as `firmauy`. Use `--help` on any command to see all ava
 
 ```bash
 firmauy --help
+firmauy sign --help
 firmauy sign-batch --help
 ```
 
