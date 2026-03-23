@@ -193,6 +193,14 @@ All cryptographic operations are performed on the user's machine and/or the conn
 Note: Optional features such as timestamping (TSA) may involve external network requests, depending on user configuration.
 
 
+## Validation
+
+Signed documents can be independently verified using external tools, such as the official validator provided by AGESIC:
+https://firma.gub.uy/
+
+No affiliation with or endorsement by AGESIC is implied.
+
+
 ## Contributing & reporting issues
 
 Bug reports, questions, and pull requests are welcome. Feel free to open an issue on GitHub.
