@@ -183,6 +183,16 @@ firmauy list-certs
 * This project focuses on practical interoperability rather than strict compliance with any specific implementation.
 
 
+## Privacy
+
+This tool is designed to run entirely locally.
+
+It does not collect, transmit, or store any user data externally.
+All cryptographic operations are performed on the user's machine and/or the connected smart card.
+
+Note: Optional features such as timestamping (TSA) may involve external network requests, depending on user configuration.
+
+
 ## Contributing & reporting issues
 
 Bug reports, questions, and pull requests are welcome. Feel free to open an issue on GitHub.

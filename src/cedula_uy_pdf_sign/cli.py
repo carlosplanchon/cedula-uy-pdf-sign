@@ -45,9 +45,11 @@ from cedula_uy_pdf_sign.pkcs11_utils import (
 
 app = typer.Typer(
     help=(
-        "Firmar PDFs con cédula uruguaya vía PKCS#11 + pyHanko.\n\n"
-        "Este proyecto no está afiliado ni cuenta con el respaldo de AGESIC. "
-        "No garantiza validez legal. Uselo bajo su propia responsabilidad."
+        "Sign PDFs with Uruguayan ID card via PKCS#11 + pyHanko.\n\n"
+        "Runs locally by default: no data is transmitted externally.\n"
+        "(Note: TSA usage may involve external connections depending on configuration.)\n\n"
+        "This project is not affiliated with or endorsed by AGESIC. "
+        "No legal validity guaranteed. Use at your own risk."
     )
 )
 
@@ -79,8 +81,8 @@ def _sign_one_pdf(
     """Sign a single PDF. Raises on any error."""
     if output_pdf.exists() and not overwrite:
         raise RuntimeError(
-            f"El archivo de salida ya existe: {output_pdf}\n"
-            "Usa --overwrite para sobreescribirlo."
+            f"Output file already exists: {output_pdf}\n"
+            "Use --overwrite to overwrite it."
         )
 
     ensure_output_parent(output_pdf)
@@ -95,19 +97,19 @@ def _sign_one_pdf(
             if field_value is not None:
                 if not force:
                     raise RuntimeError(
-                        f"El campo '{field_name}' ya contiene una firma. "
-                        "Usar --force para continuar de todas formas (el PDF podría quedar inválido)."
+                        f"Field '{field_name}' already contains a signature. "
+                        "Use --force to continue anyway (the PDF may become invalid)."
                     )
                 typer.secho(
-                    f"Advertencia: el campo '{field_name}' ya contiene una firma. "
-                    "Continuando por --force (el PDF podría quedar inválido).",
+                    f"Warning: field '{field_name}' already contains a signature. "
+                    "Continuing due to --force (the PDF may become invalid).",
                     fg=typer.colors.YELLOW,
                     err=True,
                 )
             else:
                 typer.secho(
-                    f"Advertencia: el campo '{field_name}' ya existe pero no está firmado, "
-                    "se reutilizará.",
+                    f"Warning: field '{field_name}' already exists but is unsigned, "
+                    "it will be reused.",
                     fg=typer.colors.YELLOW,
                     err=True,
                 )
@@ -170,7 +172,7 @@ def _sign_one_pdf(
 @app.command("list-tokens")
 def list_tokens(
     pkcs11_lib: str = typer.Option(
-        DEFAULT_PKCS11_LIB, "--pkcs11-lib", help="Ruta al módulo PKCS#11.",
+        DEFAULT_PKCS11_LIB, "--pkcs11-lib", help="Path to the PKCS#11 module.",
     ),
 ) -> None:
     """List all PKCS#11 tokens visible in the library."""
@@ -178,14 +180,14 @@ def list_tokens(
         lib = load_pkcs11_lib(pkcs11_lib)
         tokens = list(lib.get_tokens())
         if not tokens:
-            typer.echo("No se encontraron tokens PKCS#11.")
+            typer.echo("No PKCS#11 tokens found.")
             return
 
-        header = f"{'Label':<32}  {'Fabricante':<20}  {'Modelo':<16}  Serial"
+        header = f"{'Label':<32}  {'Manufacturer':<20}  {'Model':<16}  Serial"
         typer.echo(header)
         typer.echo("-" * len(header))
         for token in tokens:
-            label = (getattr(token, "label", "") or "").strip() or "<sin label>"
+            label = (getattr(token, "label", "") or "").strip() or "<no label>"
             manufacturer = (getattr(token, "manufacturer", "") or "").strip() or "-"
             model = (getattr(token, "model", "") or "").strip() or "-"
             serial = (getattr(token, "serial", "") or "").strip() or "-"
@@ -203,23 +205,23 @@ def list_tokens(
 @app.command("list-certs")
 def list_certs(
     pkcs11_lib: str = typer.Option(
-        DEFAULT_PKCS11_LIB, "--pkcs11-lib", help="Ruta al módulo PKCS#11.",
+        DEFAULT_PKCS11_LIB, "--pkcs11-lib", help="Path to the PKCS#11 module.",
     ),
     token_label: Optional[str] = typer.Option(
         None, "--token-label",
-        help="Label exacto del token PKCS#11. Si no se indica, se autodetecta.",
+        help="Exact PKCS#11 token label. If not provided, auto-detected.",
     ),
     pin_source: PinSource = typer.Option(
         PinSource.prompt, "--pin-source",
-        help="Cómo obtener el PIN: prompt (default), env, stdin, fd.",
+        help="How to obtain the PIN: prompt (default), env, stdin, fd.",
     ),
     pin_env_var: Optional[str] = typer.Option(
         None, "--pin-env-var",
-        help="Variable de entorno con el PIN (requiere --pin-source env).",
+        help="Environment variable holding the PIN (requires --pin-source env).",
     ),
     pin_fd: Optional[int] = typer.Option(
         None, "--pin-fd",
-        help="File descriptor con el PIN (requiere --pin-source fd).",
+        help="File descriptor holding the PIN (requires --pin-source fd).",
     ),
 ) -> None:
     """List all certificates available on the token."""
@@ -245,21 +247,21 @@ def list_certs(
                 not_after = cert_not_after(cert)
                 try:
                     ku = cert.extensions.get_extension_for_class(x509.KeyUsage)
-                    digital_sig = "sí" if ku.value.digital_signature else "no"
+                    digital_sig = "yes" if ku.value.digital_signature else "no"
                 except x509.ExtensionNotFound:
                     digital_sig = "?"
 
                 typer.echo(
-                    f"ID:            {obj_id.hex()}\n"
-                    f"Subject:       {subject_cn}\n"
-                    f"Emisor:        {issuer_cn}\n"
-                    f"Serial:        {serial}\n"
-                    f"Válido hasta:  {not_after}\n"
-                    f"Firma digital: {digital_sig}\n"
+                    f"ID:                {obj_id.hex()}\n"
+                    f"Subject:           {subject_cn}\n"
+                    f"Issuer:            {issuer_cn}\n"
+                    f"Serial:            {serial}\n"
+                    f"Valid until:       {not_after}\n"
+                    f"Digital signature: {digital_sig}\n"
                 )
 
             if not found:
-                typer.echo("No se encontraron certificados en el token.")
+                typer.echo("No certificates found in the token.")
 
     except Exception as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
@@ -272,60 +274,60 @@ def list_certs(
 
 @app.command()
 def sign(
-    input_pdf: Path = typer.Argument(..., exists=True, readable=True, help="PDF de entrada."),
-    output_pdf: Path = typer.Argument(..., help="PDF de salida firmado."),
+    input_pdf: Path = typer.Argument(..., exists=True, readable=True, help="Input PDF."),
+    output_pdf: Path = typer.Argument(..., help="Signed output PDF."),
     pkcs11_lib: str = typer.Option(
-        DEFAULT_PKCS11_LIB, "--pkcs11-lib", help="Ruta al módulo PKCS#11.",
+        DEFAULT_PKCS11_LIB, "--pkcs11-lib", help="Path to the PKCS#11 module.",
     ),
     token_label: Optional[str] = typer.Option(
         None, "--token-label",
-        help="Label exacto del token PKCS#11. Si no se indica, se autodetecta.",
+        help="Exact PKCS#11 token label. If not provided, auto-detected.",
     ),
     cert_id: Optional[str] = typer.Option(
         None, "--cert-id",
-        help="ID hexadecimal del certificado/clave PKCS#11. Si no se indica, se autodetecta.",
+        help="Hexadecimal ID of the PKCS#11 certificate/key. If not provided, auto-detected.",
     ),
     pin_source: PinSource = typer.Option(
         PinSource.prompt, "--pin-source",
-        help="Cómo obtener el PIN: prompt (default), env, stdin, fd.",
+        help="How to obtain the PIN: prompt (default), env, stdin, fd.",
     ),
     pin_env_var: Optional[str] = typer.Option(
         None, "--pin-env-var",
-        help="Variable de entorno con el PIN (requiere --pin-source env).",
+        help="Environment variable holding the PIN (requires --pin-source env).",
     ),
     pin_fd: Optional[int] = typer.Option(
         None, "--pin-fd",
-        help="File descriptor con el PIN (requiere --pin-source fd).",
+        help="File descriptor holding the PIN (requires --pin-source fd).",
     ),
     field_name: str = typer.Option(
-        "Sig1", "--field-name", help="Nombre del campo de firma.",
+        "Sig1", "--field-name", help="Signature field name.",
     ),
     page: int = typer.Option(
         -1, "--page",
-        help="Página donde colocar la firma visible. -1 = última página.",
+        help="Page where the visible signature is placed. -1 = last page.",
     ),
-    x1: int = typer.Option(DEFAULT_X1, "--x1", help="Coordenada X1 del recuadro."),
-    y1: int = typer.Option(DEFAULT_Y1, "--y1", help="Coordenada Y1 del recuadro."),
-    x2: int = typer.Option(DEFAULT_X2, "--x2", help="Coordenada X2 del recuadro."),
-    y2: int = typer.Option(DEFAULT_Y2, "--y2", help="Coordenada Y2 del recuadro."),
+    x1: int = typer.Option(DEFAULT_X1, "--x1", help="X1 coordinate of the signature box."),
+    y1: int = typer.Option(DEFAULT_Y1, "--y1", help="Y1 coordinate of the signature box."),
+    x2: int = typer.Option(DEFAULT_X2, "--x2", help="X2 coordinate of the signature box."),
+    y2: int = typer.Option(DEFAULT_Y2, "--y2", help="Y2 coordinate of the signature box."),
     timezone: str = typer.Option(
-        DEFAULT_TIMEZONE, "--timezone", help="Zona horaria para el texto visible.",
+        DEFAULT_TIMEZONE, "--timezone", help="Timezone for the visible timestamp.",
     ),
-    reason: Optional[str] = typer.Option(None, "--reason", help="Motivo de la firma."),
-    location: Optional[str] = typer.Option(None, "--location", help="Lugar de la firma."),
+    reason: Optional[str] = typer.Option(None, "--reason", help="Reason for signing."),
+    location: Optional[str] = typer.Option(None, "--location", help="Location of signing."),
     contact_info: Optional[str] = typer.Option(
-        None, "--contact-info", help="Contacto del firmante.",
+        None, "--contact-info", help="Signer contact information.",
     ),
     tsa_url: Optional[str] = typer.Option(
         None, "--tsa-url",
-        help="URL de la autoridad de sellado de tiempo (TSA). Ayuda a preservar evidencia temporal de la firma. No aplica para firma con cédula uruguaya.",
+        help="URL of the Time Stamping Authority (TSA). Helps preserve temporal evidence of the signature. Not applicable for Uruguayan cédula signatures.",
     ),
     overwrite: bool = typer.Option(
-        False, "--overwrite", help="Permitir sobreescribir el archivo de salida si ya existe.",
+        False, "--overwrite", help="Allow overwriting the output file if it already exists.",
     ),
     force: bool = typer.Option(
         False, "--force",
-        help="Continuar aunque el campo de firma ya contenga una firma (el PDF resultante podría quedar inválido).",
+        help="Continue even if the signature field already contains a signature (the resulting PDF may become invalid).",
     ),
 ) -> None:
     """Sign a PDF with a Uruguayan cédula via PKCS#11 and pyHanko."""
@@ -333,30 +335,30 @@ def sign(
         # --- Pre-flight checks ---
         if input_pdf.resolve() == output_pdf.resolve():
             raise RuntimeError(
-                "El archivo de entrada y el de salida son el mismo. "
-                "Especifica una ruta de salida diferente."
+                "Input and output files are the same. "
+                "Specify a different output path."
             )
 
         if output_pdf.exists() and not overwrite:
             raise RuntimeError(
-                f"El archivo de salida ya existe: {output_pdf}\n"
-                "Usa --overwrite para sobreescribirlo."
+                f"Output file already exists: {output_pdf}\n"
+                "Use --overwrite to overwrite it."
             )
 
         ensure_output_parent(output_pdf)
 
         if x2 <= x1 or y2 <= y1:
             raise typer.BadParameter(
-                "Las coordenadas deben satisfacer x1 < x2 e y1 < y2."
+                "Coordinates must satisfy x1 < x2 and y1 < y2."
             )
 
         box_width = x2 - x1
         box_height = y2 - y1
         if box_width != APPEARANCE_WIDTH or box_height != APPEARANCE_HEIGHT:
             typer.secho(
-                f"Advertencia: el box de firma ({box_width}x{box_height}) difiere del "
-                f"tamaño de referencia ({APPEARANCE_WIDTH}x{APPEARANCE_HEIGHT}). "
-                "La apariencia será escalada.",
+                f"Warning: signature box ({box_width}x{box_height}) differs from "
+                f"the reference size ({APPEARANCE_WIDTH}x{APPEARANCE_HEIGHT}). "
+                "The appearance will be scaled.",
                 fg=typer.colors.YELLOW,
                 err=True,
             )
@@ -373,12 +375,12 @@ def sign(
             issuer_name = normalize_issuer_name(get_common_name(cert.issuer))
             cert_serial = format(cert.serial_number, "X")
 
-            token_label_display = (getattr(token, "label", "") or "").strip() or "<sin label>"
-            typer.echo(f"Token:             {token_label_display}")
-            typer.echo(f"Firmante:          {signer_name}")
-            typer.echo(f"Emisor:            {issuer_name}")
-            typer.echo(f"ID PKCS#11:        {key_id.hex()}")
-            typer.echo(f"Serial certificado: {cert_serial}")
+            token_label_display = (getattr(token, "label", "") or "").strip() or "<no label>"
+            typer.echo(f"Token:               {token_label_display}")
+            typer.echo(f"Signer:              {signer_name}")
+            typer.echo(f"Issuer:              {issuer_name}")
+            typer.echo(f"PKCS#11 ID:          {key_id.hex()}")
+            typer.echo(f"Certificate serial:  {cert_serial}")
             if tsa_url:
                 typer.echo(f"TSA:               {tsa_url}")
 
@@ -418,7 +420,7 @@ def sign(
                 overwrite=overwrite,
             )
 
-        typer.secho(f"PDF firmado correctamente: {output_pdf}", fg=typer.colors.GREEN)
+        typer.secho(f"PDF signed successfully: {output_pdf}", fg=typer.colors.GREEN)
 
     except Exception as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
@@ -431,69 +433,69 @@ def sign(
 
 @app.command("sign-batch")
 def sign_batch(
-    input_pdfs: Optional[List[Path]] = typer.Argument(None, help="PDFs de entrada a firmar."),
-    output_dir: Path = typer.Option(..., "--output-dir", help="Directorio donde guardar los PDFs firmados."),
-    suffix: str = typer.Option("_firmado", "--suffix", help="Sufijo que se añade al nombre base del archivo de salida."),
+    input_pdfs: Optional[List[Path]] = typer.Argument(None, help="Input PDFs to sign."),
+    output_dir: Path = typer.Option(..., "--output-dir", help="Directory where signed PDFs will be saved."),
+    suffix: str = typer.Option("_firmado", "--suffix", help="Suffix appended to the base name of each output file."),
     input_dir: Optional[Path] = typer.Option(
         None, "--input-dir",
-        help="Carpeta de PDFs a firmar. Puede combinarse con argumentos individuales.",
+        help="Folder of PDFs to sign. Can be combined with positional arguments.",
     ),
     recursive: bool = typer.Option(
         False, "--recursive",
-        help="Buscar PDFs recursivamente en --input-dir.",
+        help="Recursively search for PDFs in --input-dir.",
     ),
     pkcs11_lib: str = typer.Option(
-        DEFAULT_PKCS11_LIB, "--pkcs11-lib", help="Ruta al módulo PKCS#11.",
+        DEFAULT_PKCS11_LIB, "--pkcs11-lib", help="Path to the PKCS#11 module.",
     ),
     token_label: Optional[str] = typer.Option(
         None, "--token-label",
-        help="Label exacto del token PKCS#11. Si no se indica, se autodetecta.",
+        help="Exact PKCS#11 token label. If not provided, auto-detected.",
     ),
     cert_id: Optional[str] = typer.Option(
         None, "--cert-id",
-        help="ID hexadecimal del certificado/clave PKCS#11. Si no se indica, se autodetecta.",
+        help="Hexadecimal ID of the PKCS#11 certificate/key. If not provided, auto-detected.",
     ),
     pin_source: PinSource = typer.Option(
         PinSource.prompt, "--pin-source",
-        help="Cómo obtener el PIN: prompt (default), env, stdin, fd.",
+        help="How to obtain the PIN: prompt (default), env, stdin, fd.",
     ),
     pin_env_var: Optional[str] = typer.Option(
         None, "--pin-env-var",
-        help="Variable de entorno con el PIN (requiere --pin-source env).",
+        help="Environment variable holding the PIN (requires --pin-source env).",
     ),
     pin_fd: Optional[int] = typer.Option(
         None, "--pin-fd",
-        help="File descriptor con el PIN (requiere --pin-source fd).",
+        help="File descriptor holding the PIN (requires --pin-source fd).",
     ),
     field_name: str = typer.Option(
-        "Sig1", "--field-name", help="Nombre del campo de firma.",
+        "Sig1", "--field-name", help="Signature field name.",
     ),
     page: int = typer.Option(
         -1, "--page",
-        help="Página donde colocar la firma visible. -1 = última página.",
+        help="Page where the visible signature is placed. -1 = last page.",
     ),
-    x1: int = typer.Option(DEFAULT_X1, "--x1", help="Coordenada X1 del recuadro."),
-    y1: int = typer.Option(DEFAULT_Y1, "--y1", help="Coordenada Y1 del recuadro."),
-    x2: int = typer.Option(DEFAULT_X2, "--x2", help="Coordenada X2 del recuadro."),
-    y2: int = typer.Option(DEFAULT_Y2, "--y2", help="Coordenada Y2 del recuadro."),
+    x1: int = typer.Option(DEFAULT_X1, "--x1", help="X1 coordinate of the signature box."),
+    y1: int = typer.Option(DEFAULT_Y1, "--y1", help="Y1 coordinate of the signature box."),
+    x2: int = typer.Option(DEFAULT_X2, "--x2", help="X2 coordinate of the signature box."),
+    y2: int = typer.Option(DEFAULT_Y2, "--y2", help="Y2 coordinate of the signature box."),
     timezone: str = typer.Option(
-        DEFAULT_TIMEZONE, "--timezone", help="Zona horaria para el texto visible.",
+        DEFAULT_TIMEZONE, "--timezone", help="Timezone for the visible timestamp.",
     ),
-    reason: Optional[str] = typer.Option(None, "--reason", help="Motivo de la firma."),
-    location: Optional[str] = typer.Option(None, "--location", help="Lugar de la firma."),
+    reason: Optional[str] = typer.Option(None, "--reason", help="Reason for signing."),
+    location: Optional[str] = typer.Option(None, "--location", help="Location of signing."),
     contact_info: Optional[str] = typer.Option(
-        None, "--contact-info", help="Contacto del firmante.",
+        None, "--contact-info", help="Signer contact information.",
     ),
     tsa_url: Optional[str] = typer.Option(
         None, "--tsa-url",
-        help="URL de la autoridad de sellado de tiempo (TSA). No aplica para firma con cédula uruguaya.",
+        help="URL of the Time Stamping Authority (TSA). Not applicable for Uruguayan cédula signatures.",
     ),
     overwrite: bool = typer.Option(
-        False, "--overwrite", help="Permitir sobreescribir archivos de salida si ya existen.",
+        False, "--overwrite", help="Allow overwriting output files if they already exist.",
     ),
     force: bool = typer.Option(
         False, "--force",
-        help="Continuar aunque el campo de firma ya contenga una firma.",
+        help="Continue even if the signature field already contains a signature.",
     ),
 ) -> None:
     """Sign multiple PDFs with a single PKCS#11 session (batch mode)."""
@@ -503,7 +505,7 @@ def sign_batch(
         if input_dir is not None:
             if not input_dir.is_dir():
                 typer.secho(
-                    f"--input-dir '{input_dir}' no es un directorio válido.",
+                    f"--input-dir '{input_dir}' is not a valid directory.",
                     fg=typer.colors.RED,
                     err=True,
                 )
@@ -513,8 +515,8 @@ def sign_batch(
 
         if not all_pdfs:
             typer.secho(
-                "No se especificaron archivos de entrada. "
-                "Usa argumentos posicionales o --input-dir.",
+                "No input files specified. "
+                "Use positional arguments or --input-dir.",
                 fg=typer.colors.RED,
                 err=True,
             )
@@ -524,7 +526,7 @@ def sign_batch(
 
         if x2 <= x1 or y2 <= y1:
             typer.secho(
-                "Las coordenadas deben satisfacer x1 < x2 e y1 < y2.",
+                "Coordinates must satisfy x1 < x2 and y1 < y2.",
                 fg=typer.colors.RED,
                 err=True,
             )
@@ -534,9 +536,9 @@ def sign_batch(
         box_height = y2 - y1
         if box_width != APPEARANCE_WIDTH or box_height != APPEARANCE_HEIGHT:
             typer.secho(
-                f"Advertencia: el box de firma ({box_width}x{box_height}) difiere del "
-                f"tamaño de referencia ({APPEARANCE_WIDTH}x{APPEARANCE_HEIGHT}). "
-                "La apariencia será escalada.",
+                f"Warning: signature box ({box_width}x{box_height}) differs from "
+                f"the reference size ({APPEARANCE_WIDTH}x{APPEARANCE_HEIGHT}). "
+                "The appearance will be scaled.",
                 fg=typer.colors.YELLOW,
                 err=True,
             )
@@ -555,15 +557,15 @@ def sign_batch(
             issuer_name = normalize_issuer_name(get_common_name(cert.issuer))
             cert_serial = format(cert.serial_number, "X")
 
-            token_label_display = (getattr(token, "label", "") or "").strip() or "<sin label>"
-            typer.echo(f"Token:              {token_label_display}")
-            typer.echo(f"Firmante:           {signer_name}")
-            typer.echo(f"Emisor:             {issuer_name}")
-            typer.echo(f"ID PKCS#11:         {key_id.hex()}")
-            typer.echo(f"Serial certificado: {cert_serial}")
+            token_label_display = (getattr(token, "label", "") or "").strip() or "<no label>"
+            typer.echo(f"Token:               {token_label_display}")
+            typer.echo(f"Signer:              {signer_name}")
+            typer.echo(f"Issuer:              {issuer_name}")
+            typer.echo(f"PKCS#11 ID:          {key_id.hex()}")
+            typer.echo(f"Certificate serial:  {cert_serial}")
             if tsa_url:
-                typer.echo(f"TSA:                {tsa_url}")
-            typer.echo(f"Archivos a firmar:  {len(input_pdfs)}")
+                typer.echo(f"TSA:                 {tsa_url}")
+            typer.echo(f"Files to sign:       {len(input_pdfs)}")
             typer.echo("")
 
             pkcs11_signer = PKCS11Signer(
@@ -614,7 +616,7 @@ def sign_batch(
                     err_count += 1
 
         typer.echo("")
-        typer.echo(f"Firmados: {ok_count}/{len(input_pdfs)}. Errores: {err_count}.")
+        typer.echo(f"Signed: {ok_count}/{len(input_pdfs)}. Errors: {err_count}.")
 
         if err_count:
             raise typer.Exit(code=1)

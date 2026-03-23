@@ -19,15 +19,15 @@ def load_pkcs11_lib(pkcs11_lib: str) -> pkcs11.lib:
         return pkcs11.lib(pkcs11_lib)
     except pkcs11.exceptions.GeneralError as exc:
         raise RuntimeError(
-            f"No se pudo cargar el módulo PKCS#11 '{pkcs11_lib}': {exc}"
+            f"Could not load PKCS#11 module '{pkcs11_lib}': {exc}"
         ) from exc
     except Exception as exc:
         if not Path(pkcs11_lib).exists():
             raise RuntimeError(
-                f"Módulo PKCS#11 no encontrado: '{pkcs11_lib}'"
+                f"PKCS#11 module not found: '{pkcs11_lib}'"
             ) from exc
         raise RuntimeError(
-            f"Error al cargar el módulo PKCS#11 '{pkcs11_lib}': {exc}"
+            f"Error loading PKCS#11 module '{pkcs11_lib}': {exc}"
         ) from exc
 
 
@@ -38,18 +38,18 @@ def find_token(lib: pkcs11.lib, token_label: Optional[str]) -> pkcs11.Token:
 
     tokens = list(lib.get_tokens())
     if not tokens:
-        raise RuntimeError("No se encontraron tokens PKCS#11 disponibles.")
+        raise RuntimeError("No PKCS#11 tokens available.")
 
     if len(tokens) == 1:
         return tokens[0]
 
     labels = [
-        (getattr(t, "label", "") or "").strip() or "<sin label>"
+        (getattr(t, "label", "") or "").strip() or "<no label>"
         for t in tokens
     ]
     raise RuntimeError(
-        "Se encontraron múltiples tokens y no se indicó --token-label. "
-        f"Tokens disponibles: {labels}"
+        "Multiple tokens found and --token-label was not specified. "
+        f"Available tokens: {labels}"
     )
 
 
@@ -64,7 +64,7 @@ def normalize_cert_id_hex(cert_id_hex: str) -> str:
     normalized = cert_id_hex.replace(":", "").replace(" ", "").upper()
     if not re.fullmatch(r"[0-9A-F]+", normalized):
         raise typer.BadParameter(
-            f"--cert-id '{cert_id_hex}' no es un valor hexadecimal válido."
+            f"--cert-id '{cert_id_hex}' is not a valid hexadecimal value."
         )
     return normalized
 
@@ -122,16 +122,16 @@ def select_certificate(
     if not cert_candidates and not expired_candidates:
         if cert_id_hex:
             raise RuntimeError(
-                f"No se encontró un certificado con ID {cert_id_hex} en el token."
+                f"No certificate found with ID {cert_id_hex} in the token."
             )
-        raise RuntimeError("No se encontraron certificados utilizables en el token.")
+        raise RuntimeError("No usable certificates found in the token.")
 
     if not cert_candidates:
         cn = get_common_name(expired_candidates[0][1].subject)
         not_after = cert_not_after(expired_candidates[0][1])
         raise RuntimeError(
-            f"El certificado seleccionado está vencido (válido hasta {not_after}): {cn}\n"
-            "No se encontraron certificados vigentes en el token."
+            f"Selected certificate is expired (valid until {not_after}): {cn}\n"
+            "No valid certificates found in the token."
         )
 
     no_key_candidates: list[tuple[bytes, x509.Certificate]] = []
@@ -144,8 +144,7 @@ def select_certificate(
 
     if no_key_candidates:
         typer.secho(
-            f"Advertencia: se omitieron {len(no_key_candidates)} certificado(s) "
-            "sin clave privada correspondiente en el token.",
+            f"Warning: {len(no_key_candidates)} certificate(s) skipped — no matching private key in token.",
             fg=typer.colors.YELLOW,
             err=True,
         )
@@ -153,15 +152,15 @@ def select_certificate(
     if not valid_candidates:
         cn_list = ", ".join(get_common_name(c.subject) or "?" for _, c in no_key_candidates)
         raise RuntimeError(
-            "No se encontró ningún certificado vigente con clave privada disponible. "
-            f"Certificados sin clave: {cn_list}"
+            "No valid certificate with available private key found. "
+            f"Certificates without key: {cn_list}"
         )
 
     cert_candidates = valid_candidates
 
     if expired_candidates:
         typer.secho(
-            f"Advertencia: se omitieron {len(expired_candidates)} certificado(s) vencido(s).",
+            f"Warning: {len(expired_candidates)} expired certificate(s) skipped.",
             fg=typer.colors.YELLOW,
             err=True,
         )

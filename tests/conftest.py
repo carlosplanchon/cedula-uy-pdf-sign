@@ -1,4 +1,4 @@
-"""Fixtures compartidas: certificados x509 de prueba generados en memoria."""
+"""Shared fixtures: in-memory x509 test certificates."""
 
 import datetime
 

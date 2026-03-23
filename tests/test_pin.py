@@ -11,7 +11,7 @@ class TestGetPinEnv:
 
     def test_raises_if_env_var_not_set(self, monkeypatch):
         monkeypatch.delenv("PIN_INEXISTENTE", raising=False)
-        with pytest.raises(RuntimeError, match="no definida o vacía"):
+        with pytest.raises(RuntimeError, match="is not defined or empty"):
             get_pin(PinSource.env, env_var="PIN_INEXISTENTE", fd=None)
 
     def test_raises_if_env_var_name_not_provided(self):
