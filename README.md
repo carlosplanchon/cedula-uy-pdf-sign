@@ -1,7 +1,5 @@
 # cedula-uy-pdf-sign
 
-![banner](https://raw.githubusercontent.com/carlosplanchon/cedula-uy-pdf-sign/refs/heads/main/assets/banner.jpg)
-
 Sign PDFs with a Uruguayan national ID (cédula) via PKCS#11, generating an advanced electronic signature compatible with standard PDF signature validators.
 
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/carlosplanchon/cedula-uy-pdf-sign)
