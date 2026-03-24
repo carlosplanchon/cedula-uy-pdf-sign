@@ -19,6 +19,11 @@ class PinSource(str, Enum):
 
 def get_pin(source: PinSource, env_var: Optional[str], fd: Optional[int]) -> str:
     if source == PinSource.prompt:
+        typer.secho(
+            "Warning: entering an incorrect PIN may crash the process due to a bug in the underlying PKCS#11 middleware (libgclib.so), not in firmauy itself.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
         return getpass.getpass("PIN PKCS#11: ")
     elif source == PinSource.env:
         if not env_var:

@@ -183,6 +183,32 @@ firmauy list-certs
 * This project focuses on practical interoperability rather than strict compliance with any specific implementation.
 
 
+## Known issues
+
+### Incorrect PIN may crash the process (middleware bug)
+
+On Arch Linux, entering an incorrect PIN may cause the process to terminate abruptly with:
+
+```
+*** stack smashing detected ***: terminated
+```
+
+This is a **bug in the PKCS#11 middleware** (`libgclib.so`), not in `cedula-uy-pdf-sign`.
+
+The middleware correctly returns `CKR_PIN_INCORRECT` to the caller, but then appears to corrupt its own memory during error handling. This is independently reproducible with `pkcs11-tool`:
+
+```bash
+pkcs11-tool --module /usr/lib/pkcs11/libgclib.so --login --test
+# With wrong PIN -> process crashes with stack smash
+```
+
+Because the crash occurs inside native code, it cannot be caught or recovered from at the Python level.
+
+**Practical advice:** double-check your PIN before invoking `firmauy`.
+
+This behavior is outside the control of this application.
+
+
 ## Privacy
 
 This tool is designed to run entirely locally.
