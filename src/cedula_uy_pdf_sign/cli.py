@@ -363,10 +363,10 @@ def sign(
                 err=True,
             )
 
-        final_pin = get_pin(pin_source, pin_env_var, pin_fd)
-
         lib = load_pkcs11_lib(pkcs11_lib)
         token = find_token(lib, token_label)
+
+        final_pin = get_pin(pin_source, pin_env_var, pin_fd)
 
         with token.open(user_pin=final_pin) as session:
             key_id, cert = select_certificate(session, cert_id)
@@ -545,10 +545,10 @@ def sign_batch(
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        final_pin = get_pin(pin_source, pin_env_var, pin_fd)
-
         lib = load_pkcs11_lib(pkcs11_lib)
         token = find_token(lib, token_label)
+
+        final_pin = get_pin(pin_source, pin_env_var, pin_fd)
 
         with token.open(user_pin=final_pin) as session:
             key_id, cert = select_certificate(session, cert_id)

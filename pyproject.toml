@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cedula-uy-pdf-sign"
-version = "0.3.2"
+version = "0.3.3"
 authors = [
   { name = "Carlos A. Planchón", email = "carlosandresplanchonprestes@gmail.com" }
 ]
