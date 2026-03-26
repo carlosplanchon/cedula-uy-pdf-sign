@@ -234,7 +234,7 @@ Bug reports, questions, and pull requests are welcome. Feel free to open an issu
 
 ## Acknowledgements
 
-- [@nicolasgutierrezdev](https://github.com/nicolasgutierrezdev) - @nicolasgutierrezdev - provided reference for signature appearance inspired by signatures generated using the Uruguayan ID (cédula).
+- [@nicolasgutierrezdev](https://github.com/nicolasgutierrezdev) - provided reference for signature appearance inspired by signatures generated using the Uruguayan ID (cédula).
 
 
 ## License
