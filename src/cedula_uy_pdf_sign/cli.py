@@ -275,7 +275,7 @@ def list_certs(
 @app.command()
 def sign(
     input_pdf: Path = typer.Argument(..., exists=True, readable=True, help="Input PDF."),
-    output_pdf: Path = typer.Argument(..., help="Signed output PDF."),
+    output_pdf: Optional[Path] = typer.Argument(None, help="Signed output PDF. Default: <input>_firmado.pdf"),
     pkcs11_lib: str = typer.Option(
         DEFAULT_PKCS11_LIB, "--pkcs11-lib", help="Path to the PKCS#11 module.",
     ),
@@ -331,6 +331,8 @@ def sign(
     ),
 ) -> None:
     """Sign a PDF with a Uruguayan cédula via PKCS#11 and pyHanko."""
+    if output_pdf is None:
+        output_pdf = input_pdf.with_stem(input_pdf.stem + "_firmado")
     try:
         # --- Pre-flight checks ---
         if input_pdf.resolve() == output_pdf.resolve():
