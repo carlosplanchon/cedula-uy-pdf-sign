@@ -100,7 +100,7 @@ firmauy sign-batch --help
 firmauy sign input.pdf output_signed.pdf
 ```
 
-The tool will prompt for the PKCS#11 PIN interactively.
+The tool will prompt for the PKCS#11 PIN interactively. If the output path is omitted, the signed file is saved as `<input>_firmado.pdf`.
 
 ### Custom signature position
 
