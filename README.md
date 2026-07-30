@@ -83,6 +83,13 @@ Arch Linux by the `cedula-uruguay-pkcs11` AUR package. Install it as shown in
 > See [Native signing](docs/usage.md#native-signing-no-pkcs11-middleware) and the
 > [card protocol reference](docs/card-protocol.md).
 
+> **OpenSC backend (in progress):** [@nicolasgutierrezdev](https://github.com/nicolasgutierrezdev)
+> and I are bringing support for the Uruguayan cédula to
+> [OpenSC](https://github.com/OpenSC/OpenSC), the open-source smart-card framework, so the card can
+> be used through a fully open-source PKCS#11 module (`opensc-pkcs11.so`) instead of the proprietary
+> `libgclib.so`. The driver is already merged upstream but not yet in a released version, so for now
+> you build OpenSC from source. See [Signing with the OpenSC backend](docs/opensc-backend.md).
+
 ## Setup on Arch Linux
 
 ### 1. Install smart card stack
@@ -173,6 +180,7 @@ examples for every command are in the **[usage guide](docs/usage.md)**, and task
 - **[Cookbook](docs/cookbook.md)**: task-oriented recipes for signing, verifying, privacy, automation and `jq` pipelines.
 - **[Trust anchors](docs/trust-anchors.md)**: the bundled national CA certificates, how trust is pinned and refreshed, and the state of revocation.
 - **[Card protocol reference](docs/card-protocol.md)**: the cédula's data model and the APDU-level signing protocol behind `--native` (native, PKCS#11-free signing).
+- **[OpenSC backend](docs/opensc-backend.md)**: build OpenSC from source and sign through the fully open-source `opensc-pkcs11.so` module instead of the proprietary middleware.
 - **[Development](docs/development.md)**: running from source with `uv`, the test suite, and developing without the card (SoftHSM2).
 
 ## Security considerations
