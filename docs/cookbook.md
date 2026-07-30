@@ -30,6 +30,7 @@ Diagnose the environment (no card or PIN needed for the setup checks):
 
 ```bash
 firmauy doctor                 # human-readable setup report (pcscd, PKCS#11 module, card, CAs)
+firmauy doctor --native        # check the PC/SC path used by --native signing (no middleware)
 firmauy doctor --json-pretty   # same, machine-readable
 ```
 

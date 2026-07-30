@@ -772,6 +772,26 @@ WARN  cédula token detected: no card found
 PASS  bundled national CA certificates: root + intermediate loaded
 ```
 
+### Native backend
+
+If you sign with [`--native`](#native-signing-no-pkcs11-middleware) (PC/SC direct, no PKCS#11
+middleware), pass `--native` to the doctor as well. It then checks the PC/SC reader and that the
+cédula answers the applet SELECT, and skips the PKCS#11 module and token checks, which `--native`
+does not use. Add `--reader` to select a reader when more than one is present.
+
+```bash
+firmauy doctor --native
+firmauy doctor --native --json
+```
+
+```text
+PASS  firmauy: 1.5.1 (Python 3.14.6)
+PASS  pcscd running
+PASS  PC/SC reader detected: ACS ACR 38U-CCID 00 00
+PASS  cédula detected: IAS applet selected
+PASS  bundled national CA certificates: root + intermediate loaded
+```
+
 ## Read biographical data from the card
 
 `firmauy fetch-identity` reads the biographical data stored in the card's AIS applet (names, birth date, nationality, birthplace, document number and MRZ) directly via PC/SC. This data is accessible from the card without PIN authentication, but it is still **personal data**. The applet, file identifiers and APDUs follow [AGESIC's public technical documentation](https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/comunicacion/publicaciones/documentacion-tecnica-id-uruguay/documentacion-tecnica-id-uruguay-9) for the ID Uruguay card (ISO/IEC 7816, ICAO 9303).

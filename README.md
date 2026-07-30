@@ -81,7 +81,8 @@ Arch Linux by the `cedula-uruguay-pkcs11` AUR package. Install it as shown in
 > cédula directly over PC/SC (pcscd and a reader) and needs **no PKCS#11 middleware** at all. It is
 > experimental and not officially certified, though its output is accepted by the AGESIC validator.
 > See [Native signing](docs/usage.md#native-signing-no-pkcs11-middleware) and the
-> [card protocol reference](docs/card-protocol.md).
+> [card protocol reference](docs/card-protocol.md). `firmauy doctor --native` diagnoses this
+> path (reader and card over PC/SC) instead of the PKCS#11 module.
 
 > **OpenSC backend (merged upstream, pending release):**
 > [@nicolasgutierrezdev](https://github.com/nicolasgutierrezdev) and I added support for the
