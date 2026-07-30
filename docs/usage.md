@@ -551,7 +551,7 @@ for CI or integration. The `signatures` array has one entry per signature (PDFs 
 The `signer` and `issuer` fields are structured:
 
 ```json
-{"schema_version": 1, "redacted": false, "indication": "VALID", "signatures": [
+{"schema_version": 2, "redacted": false, "indication": "VALID", "signatures": [
   {"indication": "VALID", "trusted": true,
    "signer": {"common_name": "...", "serial_number": "DNI...", "organization": null,
               "country": "UY", "certificate_serial": "..."},
@@ -560,7 +560,7 @@ The `signer` and `issuer` fields are structured:
    "checks": [{"name": "...", "ok": true, "detail": ""}]}]}
 ```
 
-On a hard error (e.g. malformed input), stdout is `{"schema_version": 1, "error": "..."}` and the
+On a hard error (e.g. malformed input), stdout is `{"schema_version": 2, "error": "..."}` and the
 exit code is `1`.
 
 Two modifiers (also valid on the human output):
@@ -582,7 +582,7 @@ Example output of `firmauy verify-pdf signed.pdf --json-pretty` (names fictitiou
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "redacted": false,
   "indication": "VALID",
   "signatures": [
@@ -619,7 +619,7 @@ and each check `detail` becomes `"[REDACTED]"`. The issuer and the check names/r
 The top-level `"redacted"` flag is present (as `false` by default) on the result record of every
 command that supports `--redact` (`verify-*`, `list-certs`, `fetch-identity`, `fetch-photo`), so a
 consumer can detect a redacted record uniformly. The verify hard-error envelope
-(`{"schema_version": 1, "error": "..."}`) carries no data, so it has no `redacted` field.
+(`{"schema_version": 2, "error": "..."}`) carries no data, so it has no `redacted` field.
 
 Revocation (CRL/OCSP) is **off by default** (offline). Enable it with `--check-revocation`,
 which fetches revocation data and fails the chain if the certificate is revoked or that data
@@ -758,7 +758,7 @@ otherwise (warnings do not fail).
 
 ```bash
 firmauy doctor
-firmauy doctor --json        # machine-readable (schema_version 1)
+firmauy doctor --json        # machine-readable (schema_version 2)
 ```
 
 Example:
@@ -807,13 +807,13 @@ Human output example:
 ╠════════════════════════════════════════════════════════╣
 ║  Número de documento       00000TXXXX                  ║
 ╟────────────────────────────────────────────────────────╢
-║  Primer apellido           EJEMPLO                     ║
-║  Segundo apellido          FICTICIO                    ║
+║  Apellidos                 EJEMPLO FICTICIO            ║
 ║  Nombre(s)                 NOMBRE EJEMPLO              ║
 ║  Nacionalidad              URY                         ║
 ║  Fecha de nacimiento       01/01/1970                  ║
 ║  Lugar de nacimiento       MONTEVIDEO/URY              ║
 ║  Número de cédula          00000000                    ║
+║  Fecha de expedición       01/01/2019                  ║
 ║  Fecha de vencimiento      01/01/2099                  ║
 ╠════════════════════════════════════════════════════════╣
 ║                          MRZ                           ║
@@ -828,16 +828,16 @@ JSON output (`--json-pretty`):
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "redacted": false,
-  "first_lastname": "EJEMPLO",
-  "second_lastname": "FICTICIO",
+  "lastnames": "EJEMPLO FICTICIO",
   "given_names": "NOMBRE EJEMPLO",
   "nationality": "URY",
   "birth_date": "01/01/1970",
   "birthplace": "MONTEVIDEO/URY",
   "id_number": "00000000",
   "id_number_check_digit_valid": true,
+  "issue_date": "01/01/2019",
   "expiry_date": "01/01/2099",
   "document_number": "00000TXXXX",
   "mrz": [
@@ -869,14 +869,14 @@ firmauy fetch-photo --json --redact      # ...without the image or any correlata
 With `--json` (or `--json-pretty`) a self-describing record is written to stdout instead of the raw image: `format`, `mime`, pixel `width`/`height`, `bytes`, the `sha256` and the `base64`-encoded image, alongside `schema_version` and the top-level `redacted` flag. It pairs with `fetch-identity --json` and embeds anywhere a data URI does (`data:image/jpeg;base64,...`).
 
 ```json
-{ "schema_version": 1, "redacted": false, "format": "jpeg", "mime": "image/jpeg",
+{ "schema_version": 2, "redacted": false, "format": "jpeg", "mime": "image/jpeg",
   "width": 240, "height": 320, "bytes": 10159, "sha256": "...", "base64": "/9j/4AAQ..." }
 ```
 
 `--redact` drops the image **and** every value that could fingerprint or correlate the cardholder (the `sha256` of a face photo is a stable per-card identifier, and the byte count leaks the same way), leaving only the non-identifying shape of the file (format, MIME type, dimensions) plus `redacted: true`. Without `--json` it is refused rather than ignored: the photo itself is the identifying data, so a redacted file or stream would have nothing to write. The sensitive keys are **omitted rather than stringified**, so the record stays well-typed and is safer to log or share:
 
 ```json
-{ "schema_version": 1, "redacted": true, "format": "jpeg", "mime": "image/jpeg", "width": 240, "height": 320 }
+{ "schema_version": 2, "redacted": true, "format": "jpeg", "mime": "image/jpeg", "width": 240, "height": 320 }
 ```
 
 The same caveat as `fetch-identity` applies: do not run it while a `sign-*` command is active on the same card. The photo is the most sensitive field on the card, so treat the output file, redirected stream, or receiving application accordingly.
@@ -904,14 +904,14 @@ Exit codes make it scriptable: `0` valid, `1` invalid, `2` malformed input. The 
 the usual `schema_version` and the top-level `redacted` flag:
 
 ```json
-{ "schema_version": 1, "redacted": false, "valid": true, "input": "1.234.567-2",
+{ "schema_version": 2, "redacted": false, "valid": true, "input": "1.234.567-2",
   "normalized": "12345672", "body": "1234567", "check_digit": "2", "expected_check_digit": "2" }
 ```
 
 With `--redact` the number (personal data) is dropped, keeping only the verdict:
 
 ```json
-{ "schema_version": 1, "redacted": true, "valid": true }
+{ "schema_version": 2, "redacted": true, "valid": true }
 ```
 
 The same check is surfaced in `fetch-identity --json` as `"id_number_check_digit_valid": true`,

@@ -26,13 +26,14 @@ AIS_AID = [0xA0, 0x00, 0x00, 0x00, 0x18, 0x40, 0x00, 0x00, 0x01, 0x63, 0x42, 0x0
 # Every field here is the cardholder's personal data, so --redact hides them all (a partial
 # redaction of an identity dump, e.g. keeping birth date or birthplace, defeats the purpose).
 BIO_FIELDS = {
-    0x01: ("Primer apellido",      False, "first_lastname"),
+    0x01: ("Apellidos",            False, "lastnames"),
     0x02: ("Segundo apellido",     False, "second_lastname"),
     0x03: ("Nombre(s)",            False, "given_names"),
     0x04: ("Nacionalidad",         False, "nationality"),
     0x05: ("Fecha de nacimiento",  True,  "birth_date"),
     0x06: ("Lugar de nacimiento",  False, "birthplace"),
     0x07: ("Número de cédula",     False, "id_number"),
+    0x08: ("Fecha de expedición",  True,  "issue_date"),
     0x09: ("Fecha de vencimiento", True,  "expiry_date"),
 }
 
@@ -183,10 +184,15 @@ def parse_bio(data: list) -> dict:
             break   # declared length runs past the buffer: stop rather than emit a truncated value
         if length > 0:
             raw = bytes(data[i + 3: i + 3 + length])
-            try:
-                fields[tag] = raw.decode("utf-8")
-            except UnicodeDecodeError:
+            if tag == 0x08:
+                # Fecha de expedición: packed BCD, not ASCII. hex() maps each BCD
+                # byte (e.g. 0x15) to its two digits ("15"), yielding DDMMYYYY.
                 fields[tag] = raw.hex()
+            else:
+                try:
+                    fields[tag] = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    fields[tag] = raw.hex()
         i += 3 + length
     return fields
 

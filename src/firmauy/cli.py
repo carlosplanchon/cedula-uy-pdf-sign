@@ -815,7 +815,7 @@ def list_certs(
     ),
     json_output: bool = typer.Option(
         False, "--json",
-        help="Emit the certificate list as a single JSON object (schema_version 1); with --pem, "
+        help="Emit the certificate list as a single JSON object (schema_version 2); with --pem, "
              "each entry also includes a 'pem' field.",
     ),
     json_pretty: bool = typer.Option(
@@ -2171,7 +2171,7 @@ _INDICATION_RANK = {"VALID": 0, "INDETERMINATE": 1, "INVALID": 2}
 
 # Public, versioned JSON contract for the verify commands (decoupled from the internal
 # VerifyResult dataclass, so it can be refactored without breaking consumers).
-_JSON_SCHEMA_VERSION = 1
+_JSON_SCHEMA_VERSION = 2
 
 # Signer fields hidden by --redact (personal data). The issuer is a public CA and is kept.
 _REDACT_FIELDS = ("common_name", "serial_number", "certificate_serial")
@@ -2236,7 +2236,7 @@ def _emit_verify(results: list, json_output: bool, pretty: bool = False, redact:
     personal fields (issuer kept). Exit codes are decided by the caller from the returned
     indication, so they are identical in every mode.
 
-        {"schema_version": 1, "redacted": false, "indication": "...", "signatures": [
+        {"schema_version": 2, "redacted": false, "indication": "...", "signatures": [
             {"indication", "signer": {...}, "issuer": {...}, "trusted",
              "checks": [{"name","ok","detail"}]}]}
     """
@@ -2267,7 +2267,7 @@ def _emit_verify_error(exc: Exception, json_output: bool, pretty: bool = False) 
 
 
 _JSON_OPT_HELP = (
-    "Emit the result as a single JSON object on stdout (schema_version 1); "
+    "Emit the result as a single JSON object on stdout (schema_version 2); "
     "exit codes are unchanged."
 )
 _JSON_PRETTY_OPT_HELP = "Like --json but indented for humans (implies --json)."

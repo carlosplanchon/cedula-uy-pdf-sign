@@ -63,7 +63,7 @@ def test_emit_verify_json_schema(capsys):
     overall = _emit_verify([r], json_output=True)
     assert overall == "VALID"
     out = json.loads(capsys.readouterr().out)
-    assert out["schema_version"] == 1 and out["indication"] == "VALID"
+    assert out["schema_version"] == 2 and out["indication"] == "VALID"
     assert out["redacted"] is False                    # top-level redaction flag (always present)
     assert len(out["signatures"]) == 1
     sig = out["signatures"][0]
@@ -139,7 +139,7 @@ def test_emit_verify_pretty_is_indented(capsys):
     _emit_verify([r], json_output=True, pretty=True)
     out = capsys.readouterr().out
     assert "\n  " in out
-    assert json.loads(out)["schema_version"] == 1
+    assert json.loads(out)["schema_version"] == 2
 
 
 def test_emit_verify_overall_is_worst_signature(capsys):
@@ -153,7 +153,7 @@ def test_emit_verify_overall_is_worst_signature(capsys):
 def test_emit_verify_error_json(capsys):
     _emit_verify_error(ValueError("boom"), json_output=True)
     out = json.loads(capsys.readouterr().out)
-    assert out["schema_version"] == 1
+    assert out["schema_version"] == 2
     assert out["error"] == "boom"
 
 
@@ -190,7 +190,7 @@ def test_verify_any_json_end_to_end(tmp_path):
     result = runner.invoke(app, ["verify-any", str(doc), "--no-trust", "--json"])
     assert result.exit_code == 2  # integrity OK, no trust -> INDETERMINATE
     payload = json.loads(result.output)  # stdout is pure JSON
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["indication"] == "INDETERMINATE"
     assert payload["signatures"][0]["indication"] == "INDETERMINATE"
     assert payload["signatures"][0]["signer"]["common_name"] == "TEST SIGNER"
@@ -219,7 +219,7 @@ def test_doctor_emit_ok_when_no_fail(capsys):
     ]
     assert _doctor_emit(checks, json_output=True) is True
     out = json.loads(capsys.readouterr().out)
-    assert out["schema_version"] == 1 and out["ok"] is True
+    assert out["schema_version"] == 2 and out["ok"] is True
     assert len(out["checks"]) == 2
 
 
@@ -233,7 +233,7 @@ def test_doctor_command_json_contract():
     # Environment-independent: assert the contract shape and exit/ok consistency.
     result = runner.invoke(app, ["doctor", "--json"])
     payload = json.loads(result.output)
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert isinstance(payload["ok"], bool)
     assert payload["checks"]
     for c in payload["checks"]:
@@ -932,7 +932,7 @@ def test_fetch_photo_json_emits_record_to_stdout(monkeypatch, capsys):
                         json_output=True, json_pretty=False, redact=False)
 
     obj = json.loads(capsys.readouterr().out)
-    assert obj["schema_version"] == 1
+    assert obj["schema_version"] == 2
     assert obj["redacted"] is False                     # flag present (and false) on the full record
     assert obj["format"] == "jpeg" and obj["mime"] == "image/jpeg"
     assert obj["bytes"] == len(_JPEG)
@@ -1027,11 +1027,11 @@ def test_fetch_identity_json_carries_redacted_flag(monkeypatch, capsys):
 
     cli.fetch_identity_cmd(reader_name=None, json_output=True, json_pretty=False, redact=False)
     full = json.loads(capsys.readouterr().out)
-    assert full["redacted"] is False and full["first_lastname"] == "PEREZ"
+    assert full["redacted"] is False and full["lastnames"] == "PEREZ"
 
     cli.fetch_identity_cmd(reader_name=None, json_output=True, json_pretty=False, redact=True)
     red = json.loads(capsys.readouterr().out)
-    assert red["redacted"] is True and red["first_lastname"] == "[REDACTED]"
+    assert red["redacted"] is True and red["lastnames"] == "[REDACTED]"
 
 
 # --- validate-ci (card-free check-digit command) --------------------------------------------------
@@ -1063,7 +1063,7 @@ def test_validate_ci_json_full_record():
 def test_validate_ci_json_redact_drops_number_keeps_validity():
     result = runner.invoke(app, ["validate-ci", "12345678", "--json", "--redact"])
     assert result.exit_code == 1                                   # exit code still reflects validity
-    assert json.loads(result.stdout) == {"schema_version": 1, "redacted": True, "valid": False}
+    assert json.loads(result.stdout) == {"schema_version": 2, "redacted": True, "valid": False}
 
 
 def test_validate_ci_complete_prints_completed_number():

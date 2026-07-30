@@ -95,7 +95,7 @@ def test_fmt_date_malformed_length_returned_as_is():
 
 def test_json_obj_full_then_redacted():
     full = card_to_json_obj(_CARD, redact=False)
-    assert full["first_lastname"] == "PEREZ"
+    assert full["lastnames"] == "PEREZ"
     assert full["birth_date"] == "01/01/1970"      # date formatted
     assert full["birthplace"] == "MONTEVIDEO"
     assert full["document_number"] == "00000TXXXX"
@@ -103,7 +103,7 @@ def test_json_obj_full_then_redacted():
 
     red = card_to_json_obj(_CARD, redact=True)
     # Every biographical field, the document number and the MRZ are hidden.
-    for key in ("first_lastname", "second_lastname", "given_names", "nationality",
+    for key in ("lastnames", "second_lastname", "given_names", "nationality",
                 "birth_date", "birthplace", "id_number", "expiry_date", "document_number"):
         assert red[key] == "[REDACTED]", key
     assert red["mrz"] == "[REDACTED]"
@@ -127,7 +127,7 @@ def test_human_output_redacted_leaks_nothing():
 def test_absent_fields_are_omitted():
     card = {"bio": {0x01: "PEREZ"}, "doc_num": None, "mrz": None}
     out = card_to_json_obj(card, redact=False)
-    assert out == {"first_lastname": "PEREZ"}   # missing fields/doc/mrz omitted
+    assert out == {"lastnames": "PEREZ"}   # missing fields/doc/mrz omitted
 
 
 # --- photo (file 7004) parsing ----------------------------------------------

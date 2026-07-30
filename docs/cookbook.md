@@ -205,7 +205,7 @@ firmauy fetch-photo --json-pretty --redact
 The redacted photo record carries no image and no fingerprint, only the (constant) shape of the file:
 
 ```json
-{ "schema_version": 1, "redacted": true, "format": "jpeg", "mime": "image/jpeg", "width": 240, "height": 320 }
+{ "schema_version": 2, "redacted": true, "format": "jpeg", "mime": "image/jpeg", "width": 240, "height": 320 }
 ```
 
 Build a debug report that is safe to attach to a GitHub issue (every block is redacted or PII-free):
