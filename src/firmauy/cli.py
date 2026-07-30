@@ -2689,16 +2689,96 @@ def _doctor_emit(checks: list, json_output: bool, pretty: bool = False) -> bool:
     return ok
 
 
+def _doctor_pkcs11(add, pkcs11_lib: str) -> None:
+    """PKCS#11-backend checks: the middleware module and the token it exposes."""
+    lib = None
+    if Path(pkcs11_lib).exists():
+        add("PASS", "PKCS#11 module present", pkcs11_lib)
+        try:
+            lib = load_pkcs11_lib(pkcs11_lib)
+            add("PASS", "PKCS#11 module loads")
+        except Exception as exc:
+            add("FAIL", "PKCS#11 module loads", _format_error(exc),
+                fix="The module is present but could not be initialised; check the middleware install.")
+    else:
+        add("FAIL", "PKCS#11 module present", f"not found: {pkcs11_lib}",
+            fix="Install the middleware (Arch: yay -S cedula-uruguay-pkcs11), or pass --pkcs11-lib.")
+
+    if lib is None:
+        return
+    try:
+        tokens = list(lib.get_tokens())
+    except Exception:
+        tokens = []
+    if tokens:
+        label = (getattr(tokens[0], "label", "") or "").strip() or "<no label>"
+        extra = f" (+{len(tokens) - 1} more)" if len(tokens) > 1 else ""
+        add("PASS", "cédula token detected", f"{label}{extra}")
+    else:
+        add("WARN", "cédula token detected", "no card found",
+            fix="Insert the cédula and check the reader connection / pcscd.")
+
+
+def _doctor_native(add, reader: Optional[str]) -> None:
+    """Native (PC/SC) checks: a reader is present and the cédula answers, no PKCS#11 module."""
+    from firmauy.card_reader import list_readers, open_reader, select_applet
+
+    try:
+        available = list_readers()
+    except Exception as exc:
+        add("WARN", "PC/SC reader detected", _format_error(exc),
+            fix="Install the smart-card stack (sudo pacman -S pcsclite ccid) and start pcscd.")
+        return
+    if not available:
+        add("WARN", "PC/SC reader detected", "none found",
+            fix="Connect a reader and make sure pcscd is running.")
+        return
+    add("PASS", "PC/SC reader detected", ", ".join(str(r) for r in available))
+
+    # Confirm the cédula answers over PC/SC: open the reader and select the IAS applet (no PIN).
+    try:
+        conn = open_reader(reader)
+    except Exception as exc:
+        add("WARN", "cédula detected", _format_error(exc),
+            fix="Insert the cédula, or pass --reader if you have more than one reader.")
+        return
+    try:
+        select_applet(conn)
+        add("PASS", "cédula detected", "IAS applet selected")
+    except Exception as exc:
+        add("WARN", "cédula detected", _format_error(exc),
+            fix="A card is present but did not answer as a cédula; check it is the right card.")
+    finally:
+        try:
+            conn.disconnect()
+        except Exception:
+            pass
+
+
 @app.command("doctor")
 def doctor_cmd(
-    pkcs11_lib: str = typer.Option(DEFAULT_PKCS11_LIB, "--pkcs11-lib", help="Path to the PKCS#11 module to check."),
+    native: bool = typer.Option(
+        False, "--native",
+        help="Diagnose the native PC/SC path used by --native signing (reader + card over "
+             "PC/SC) instead of the PKCS#11 middleware module.",
+    ),
+    reader: Optional[str] = typer.Option(
+        None, "--reader",
+        help="PC/SC reader for --native (as shown by list-readers). Auto-detected when only one is present.",
+    ),
+    pkcs11_lib: str = typer.Option(
+        DEFAULT_PKCS11_LIB, "--pkcs11-lib",
+        help="Path to the PKCS#11 module to check (ignored with --native).",
+    ),
     json_output: bool = typer.Option(False, "--json", help=_JSON_OPT_HELP),
     json_pretty: bool = typer.Option(False, "--json-pretty", help=_JSON_PRETTY_OPT_HELP),
 ) -> None:
     """Diagnose the local environment for signing with the cédula.
 
     Reports PASS / WARN / FAIL for each prerequisite, with a remediation hint. Needs no PIN.
-    Exit code: 0 if there are no FAILs, 1 otherwise (warnings do not fail)."""
+    With --native, checks the PC/SC reader and card that native signing uses, instead of the
+    PKCS#11 middleware module. Exit code: 0 if there are no FAILs, 1 otherwise (warnings do
+    not fail)."""
     import platform
     from importlib.metadata import PackageNotFoundError
     from importlib.metadata import version as _pkg_version
@@ -2714,19 +2794,7 @@ def doctor_cmd(
         v = "unknown"
     add("PASS", "firmauy", f"{v} (Python {platform.python_version()})")
 
-    lib = None
-    if Path(pkcs11_lib).exists():
-        add("PASS", "PKCS#11 module present", pkcs11_lib)
-        try:
-            lib = load_pkcs11_lib(pkcs11_lib)
-            add("PASS", "PKCS#11 module loads")
-        except Exception as exc:
-            add("FAIL", "PKCS#11 module loads", _format_error(exc),
-                fix="The module is present but could not be initialised; check the middleware install.")
-    else:
-        add("FAIL", "PKCS#11 module present", f"not found: {pkcs11_lib}",
-            fix="Install the middleware (Arch: yay -S cedula-uruguay-pkcs11), or pass --pkcs11-lib.")
-
+    # pcscd is needed by both backends (the PKCS#11 middleware and native both talk via pcscd).
     if any(Path(s).exists() for s in _PCSCD_SOCKETS):
         add("PASS", "pcscd running")
     elif shutil.which("pcscd"):
@@ -2736,18 +2804,10 @@ def doctor_cmd(
         add("WARN", "pcscd running", "not found",
             fix="Install the smart-card stack: sudo pacman -S pcsclite ccid")
 
-    if lib is not None:
-        try:
-            tokens = list(lib.get_tokens())
-        except Exception:
-            tokens = []
-        if tokens:
-            label = (getattr(tokens[0], "label", "") or "").strip() or "<no label>"
-            extra = f" (+{len(tokens) - 1} more)" if len(tokens) > 1 else ""
-            add("PASS", "cédula token detected", f"{label}{extra}")
-        else:
-            add("WARN", "cédula token detected", "no card found",
-                fix="Insert the cédula and check the reader connection / pcscd.")
+    if native:
+        _doctor_native(add, reader)
+    else:
+        _doctor_pkcs11(add, pkcs11_lib)
 
     roots, intermediates = load_bundled_trust_anchors()
     if roots and intermediates:
