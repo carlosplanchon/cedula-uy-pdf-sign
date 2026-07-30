@@ -57,3 +57,9 @@ dev = ["pytest>=8", "signxml>=4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# Select the classic default ruleset explicitly (pyflakes + a pycodestyle
+# subset) so linting stays deterministic across ruff releases. ruff 0.16
+# widened its implicit default, which broke `uvx ruff check` in CI.
+select = ["E4", "E7", "E9", "F"]
