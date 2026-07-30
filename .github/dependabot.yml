@@ -1,0 +1,31 @@
+# Dependabot configuration for FirmaUY.
+# Keeps Python dependencies (via uv) and GitHub Actions up to date.
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates
+version: 2
+updates:
+  # Python dependencies. Dependabot follows uv.lock and pyproject.toml,
+  # regenerating the lockfile with `uv lock --upgrade-package` under the hood.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for all minor and patch bumps, to cut noise and CI runs. Major
+      # bumps still arrive as individual PRs so each one gets reviewed on its own.
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions used by the CI and release workflows.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
