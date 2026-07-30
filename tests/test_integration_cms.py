@@ -214,3 +214,47 @@ def test_sign_any_batch_signs_all(softhsm_token, tmp_path):
         res = verify_cms((in_dir / rel).read_bytes(), out.read_bytes(), trust_roots=None)
         assert res.indication == "INDETERMINATE"
         assert all(c.ok for c in res.checks), [(c.name, c.detail) for c in res.checks if not c.ok]
+
+
+def test_api_sign_file_direct_pin_pkcs11(softhsm_token, tmp_path, monkeypatch):
+    """firmauy.api.sign_file signs in-process with a directly supplied PIN (no prompt, no subprocess).
+
+    Drives the public API's PKCS#11 path against SoftHSM2, exercising the pin= injection the desktop
+    app relies on (the same session code native signing uses, minus the card) and the post-sign
+    self-check (verify=True)."""
+    from firmauy.api import SignReport, sign_file
+
+    module, env, cert = softhsm_token
+    # The API loads the PKCS#11 module in THIS process, so SoftHSM must find its config through the
+    # environment (the fixture only set it in the subprocess env it returns).
+    monkeypatch.setenv("SOFTHSM2_CONF", env["SOFTHSM2_CONF"])
+
+    input_file = tmp_path / "payload-api.bin"
+    payload = b"api in-process \x00\x01\x02 contents\n"
+    input_file.write_bytes(payload)
+
+    report = sign_file(
+        input_file, PIN, native=False, pkcs11_lib=module, token_label=TOKEN_LABEL, verify=True,
+    )
+
+    assert isinstance(report, SignReport)
+    assert report.output_path == input_file.with_name(input_file.name + ".p7s")
+    assert report.output_path.exists()
+    assert report.signer == "PEREZ PEREZ JUAN"
+    assert report.issuer  # issuer common name surfaced, non-empty
+
+    # Detached CMS SignedData, original left untouched.
+    ci = asn1cms.ContentInfo.load(report.output_path.read_bytes())
+    assert ci["content_type"].native == "signed_data"
+    assert ci["content"]["encap_content_info"]["content"].native is None
+    assert input_file.read_bytes() == payload
+
+
+def test_api_sign_file_rejects_empty_pin(tmp_path):
+    """An empty PIN is refused before any token access (it would still spend a card retry)."""
+    from firmauy.api import sign_file
+
+    f = tmp_path / "x.bin"
+    f.write_bytes(b"data")
+    with pytest.raises(ValueError, match="non-empty PIN"):
+        sign_file(f, "", native=False)

@@ -183,6 +183,7 @@ examples for every command are in the **[usage guide](docs/usage.md)**, and task
 - **[Trust anchors](docs/trust-anchors.md)**: the bundled national CA certificates, how trust is pinned and refreshed, and the state of revocation.
 - **[Card protocol reference](docs/card-protocol.md)**: the cédula's data model and the APDU-level signing protocol behind `--native` (native, PKCS#11-free signing).
 - **[OpenSC backend](docs/opensc-backend.md)**: build OpenSC from source and sign through the fully open-source `opensc-pkcs11.so` module instead of the proprietary middleware.
+- **[Library API](docs/api.md)**: use firmauy from your own Python program (`firmauy.api`) to verify, sign and diagnose, instead of shelling out to the CLI.
 - **[Development](docs/development.md)**: running from source with `uv`, the test suite, and developing without the card (SoftHSM2).
 
 ## Security considerations

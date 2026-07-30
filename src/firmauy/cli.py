@@ -273,44 +273,51 @@ def _card_connection(reader_name=None):
 
 @contextmanager
 def _signing_session(*, native, reader, pkcs11_lib, token_label, cert_id, pin_source, pin_env_var,
-                     pin_fd, tsa_url, quiet):
+                     pin_fd, tsa_url, quiet, pin=None, emit_notes=True):
     """Open a signing session with the selected backend and yield a ``_SigningContext``.
 
     Dispatches to the native PC/SC backend (``--native``) or the PKCS#11 backend. Both select the
     signing certificate, print the identity block, and expose the same signer factories, so every
     sign-* command (single and batch) stays backend-agnostic. Warns first (pre-flight, before any
     PIN prompt) about options that don't apply to the chosen backend. Callers keep their own
-    (fail-fast, pre-PIN) validation and timestamper build."""
+    (fail-fast, pre-PIN) validation and timestamper build.
+
+    ``pin`` lets a non-interactive caller (the public API) supply the already-known PIN directly,
+    bypassing ``pin_source``; it is still verified only after the PIN-free certificate read, so the
+    card's retry-limit guard is preserved. ``emit_notes=False`` suppresses the informational
+    backend-option notes on stderr. Both default to the CLI's behavior."""
     _check_backend_options(
         native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
-        cert_id=cert_id,
+        cert_id=cert_id, notes=emit_notes,
     )
     if native:
         with _native_signing_session(
             reader=reader, pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
-            tsa_url=tsa_url, quiet=quiet,
+            tsa_url=tsa_url, quiet=quiet, pin=pin,
         ) as ctx:
             yield ctx
     else:
         with _pkcs11_signing_session(
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id, pin_source=pin_source,
-            pin_env_var=pin_env_var, pin_fd=pin_fd, tsa_url=tsa_url, quiet=quiet,
+            pin_env_var=pin_env_var, pin_fd=pin_fd, tsa_url=tsa_url, quiet=quiet, pin=pin,
         ) as ctx:
             yield ctx
 
 
 @contextmanager
 def _pkcs11_signing_session(*, pkcs11_lib, token_label, cert_id, pin_source, pin_env_var, pin_fd,
-                            tsa_url, quiet):
+                            tsa_url, quiet, pin=None):
     """PKCS#11 backend: load the module, open a PIN session, select the signing certificate and print
-    the identity block, then yield the context. The session is closed on exit."""
+    the identity block, then yield the context. The session is closed on exit.
+
+    ``pin`` (when not None) is the already-known PIN, used instead of reading ``pin_source``."""
     # Validate the hex cert ID up front: a malformed --cert-id must fail before we prompt for the
     # PIN (an incorrect PIN counts toward the card's retry limit), not later inside select_certificate.
     if cert_id is not None:
         normalize_cert_id_hex(cert_id)
     lib = load_pkcs11_lib(pkcs11_lib)
     token = find_token(lib, token_label)
-    final_pin = get_pin(pin_source, pin_env_var, pin_fd)
+    final_pin = pin if pin is not None else get_pin(pin_source, pin_env_var, pin_fd)
     with token.open(user_pin=final_pin) as session:
         key_id, cert = select_certificate(session, cert_id)
         signer_name, issuer_name, cert_serial = _cert_display_fields(cert)
@@ -329,11 +336,14 @@ def _pkcs11_signing_session(*, pkcs11_lib, token_label, cert_id, pin_source, pin
 
 
 @contextmanager
-def _native_signing_session(*, reader, pin_source, pin_env_var, pin_fd, tsa_url, quiet):
+def _native_signing_session(*, reader, pin_source, pin_env_var, pin_fd, tsa_url, quiet, pin=None):
     """Native PC/SC backend: open the reader, select the applet, read the public signing certificate,
     verify the PIN and yield the context. No PKCS#11 module is loaded. The connection is closed on
     exit. Do not run while a PKCS#11 sign session is open on the same card: both go through pcscd and
-    will conflict."""
+    will conflict.
+
+    ``pin`` (when not None) is the already-known PIN, used instead of reading ``pin_source``; it is
+    still verified only after the PIN-free certificate read, preserving the retry-limit guard."""
     from firmauy import native_card
     with _card_connection(reader) as conn:
         select_applet(conn)
@@ -351,7 +361,7 @@ def _native_signing_session(*, reader, pin_source, pin_env_var, pin_fd, tsa_url,
         signer_name, issuer_name, cert_serial = _cert_display_fields(cert)
         # Prompt/read the PIN only after the (PIN-free) cert read succeeds, so a reader/card problem
         # surfaces before we ask for a PIN. verify_pin refuses to spend the card's last retry.
-        final_pin = get_pin(pin_source, pin_env_var, pin_fd)
+        final_pin = pin if pin is not None else get_pin(pin_source, pin_env_var, pin_fd)
         native_card.verify_pin(conn, final_pin)
         _print_signing_info(
             # The reader name pyscard resolved, so the identity block records the actual device
@@ -447,7 +457,7 @@ def _build_timestamper(
     return HTTPTimeStamper(tsa_url, auth=auth, headers=headers or None)
 
 
-def _check_backend_options(*, native, reader, pkcs11_lib, token_label, cert_id) -> None:
+def _check_backend_options(*, native, reader, pkcs11_lib, token_label, cert_id, notes=True) -> None:
     """Pre-flight (before any reader or PIN access): reject or warn about options that don't apply
     to the chosen backend.
 
@@ -456,7 +466,10 @@ def _check_backend_options(*, native, reader, pkcs11_lib, token_label, cert_id) 
     PKCS#11 object IDs to match -- so combining it with --native is a hard error, not a silently
     weakened warning. --pkcs11-lib/--token-label are harmless in native mode and only warn, and the
     pcscd single-card caveat applies (same wording as fetch-identity). --reader only applies to the
-    native backend, so it is a no-op with PKCS#11."""
+    native backend, so it is a no-op with PKCS#11.
+
+    ``notes`` may be set False by non-interactive callers (the public API) to suppress the
+    informational stderr notes; the --cert-id/--native hard error is always raised."""
     if native:
         if cert_id is not None:
             raise RuntimeError(
@@ -465,6 +478,8 @@ def _check_backend_options(*, native, reader, pkcs11_lib, token_label, cert_id) 
                 "certificate (EF B001). Drop --cert-id, or use the PKCS#11 backend to select a "
                 "certificate by ID."
             )
+        if not notes:
+            return
         ignored = [
             name for name, changed in (
                 ("--pkcs11-lib", pkcs11_lib != DEFAULT_PKCS11_LIB),
@@ -482,7 +497,7 @@ def _check_backend_options(*, native, reader, pkcs11_lib, token_label, cert_id) 
             "sign-* invocations) is active on the same card -- both go through pcscd and may conflict.",
             fg=typer.colors.YELLOW, err=True,
         )
-    elif reader is not None:
+    elif reader is not None and notes:
         typer.secho(
             "Note: --reader only applies to --native; it is ignored with the PKCS#11 backend.",
             fg=typer.colors.YELLOW, err=True,
@@ -2755,30 +2770,14 @@ def _doctor_native(add, reader: Optional[str]) -> None:
             pass
 
 
-@app.command("doctor")
-def doctor_cmd(
-    native: bool = typer.Option(
-        False, "--native",
-        help="Diagnose the native PC/SC path used by --native signing (reader + card over "
-             "PC/SC) instead of the PKCS#11 middleware module.",
-    ),
-    reader: Optional[str] = typer.Option(
-        None, "--reader",
-        help="PC/SC reader for --native (as shown by list-readers). Auto-detected when only one is present.",
-    ),
-    pkcs11_lib: str = typer.Option(
-        DEFAULT_PKCS11_LIB, "--pkcs11-lib",
-        help="Path to the PKCS#11 module to check (ignored with --native).",
-    ),
-    json_output: bool = typer.Option(False, "--json", help=_JSON_OPT_HELP),
-    json_pretty: bool = typer.Option(False, "--json-pretty", help=_JSON_PRETTY_OPT_HELP),
-) -> None:
-    """Diagnose the local environment for signing with the cédula.
+def _collect_doctor_checks(native: bool, reader: Optional[str], pkcs11_lib: str) -> list:
+    """Gather every diagnostic check as a list of ``{status, name, detail, fix}`` dicts.
 
-    Reports PASS / WARN / FAIL for each prerequisite, with a remediation hint. Needs no PIN.
-    With --native, checks the PC/SC reader and card that native signing uses, instead of the
-    PKCS#11 middleware module. Exit code: 0 if there are no FAILs, 1 otherwise (warnings do
-    not fail)."""
+    Pure data gathering: it probes the environment but does no printing and never exits, so the
+    ``doctor`` CLI command and the public API (:func:`firmauy.api.run_doctor`) share one source
+    of truth. ``status`` is PASS / WARN / FAIL. With ``native`` the PC/SC reader and card are
+    checked; otherwise the PKCS#11 middleware module at ``pkcs11_lib``.
+    """
     import platform
     from importlib.metadata import PackageNotFoundError
     from importlib.metadata import version as _pkg_version
@@ -2816,6 +2815,34 @@ def doctor_cmd(
         add("FAIL", "bundled national CA certificates", "not loadable",
             fix="The package install looks broken; reinstall firmauy.")
 
+    return checks
+
+
+@app.command("doctor")
+def doctor_cmd(
+    native: bool = typer.Option(
+        False, "--native",
+        help="Diagnose the native PC/SC path used by --native signing (reader + card over "
+             "PC/SC) instead of the PKCS#11 middleware module.",
+    ),
+    reader: Optional[str] = typer.Option(
+        None, "--reader",
+        help="PC/SC reader for --native (as shown by list-readers). Auto-detected when only one is present.",
+    ),
+    pkcs11_lib: str = typer.Option(
+        DEFAULT_PKCS11_LIB, "--pkcs11-lib",
+        help="Path to the PKCS#11 module to check (ignored with --native).",
+    ),
+    json_output: bool = typer.Option(False, "--json", help=_JSON_OPT_HELP),
+    json_pretty: bool = typer.Option(False, "--json-pretty", help=_JSON_PRETTY_OPT_HELP),
+) -> None:
+    """Diagnose the local environment for signing with the cédula.
+
+    Reports PASS / WARN / FAIL for each prerequisite, with a remediation hint. Needs no PIN.
+    With --native, checks the PC/SC reader and card that native signing uses, instead of the
+    PKCS#11 middleware module. Exit code: 0 if there are no FAILs, 1 otherwise (warnings do
+    not fail)."""
+    checks = _collect_doctor_checks(native, reader, pkcs11_lib)
     if not _doctor_emit(checks, json_output or json_pretty, pretty=json_pretty):
         raise typer.Exit(code=1)
 
