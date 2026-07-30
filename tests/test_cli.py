@@ -18,7 +18,6 @@ from pyhanko_certvalidator.registry import SimpleCertificateStore
 from typer.testing import CliRunner
 
 from firmauy.cli import (
-    _check_post_sign,
     _detached_original,
     _detect_signature_kind,
     _doctor_emit,
@@ -27,8 +26,12 @@ from firmauy.cli import (
     _verify_after_cms,
     app,
 )
+from firmauy.signing import _check_post_sign
 from firmauy.cms_sign import sign_cms_detached
 from firmauy.verify_common import Check, VerifyResult
+
+import firmauy.cli as cli
+import firmauy.signing as signing
 
 runner = CliRunner()
 
@@ -492,7 +495,7 @@ def test_batch_rejects_output_collision_before_card(tmp_path, cmd, fname):
 
 
 def test_atomic_write_bytes_writes_and_cleans_up_temp(tmp_path):
-    from firmauy.cli import _atomic_write_bytes
+    from firmauy.signing import _atomic_write_bytes
 
     out = tmp_path / "o.bin"
     _atomic_write_bytes(out, b"hello")
@@ -503,7 +506,7 @@ def test_atomic_write_bytes_writes_and_cleans_up_temp(tmp_path):
 def test_atomic_write_bytes_replaces_symlink_without_writing_through(tmp_path):
     # The XML/CMS signed outputs go through _atomic_write_bytes, which must REPLACE a pre-existing
     # output symlink with the real file -- not follow it and clobber its target (what write_bytes did).
-    from firmauy.cli import _atomic_write_bytes
+    from firmauy.signing import _atomic_write_bytes
 
     target = tmp_path / "target.txt"
     target.write_bytes(b"DO NOT TOUCH")
@@ -527,10 +530,9 @@ class _RecordingConn:
 
 
 def test_fetch_identity_disconnects_the_reader(monkeypatch):
-    import firmauy.cli as cli
 
     conn = _RecordingConn()
-    monkeypatch.setattr(cli, "open_reader", lambda reader_name=None: conn)
+    monkeypatch.setattr(signing, "open_reader", lambda reader_name=None: conn)
     monkeypatch.setattr(cli, "read_card", lambda c: {"bio": {}, "doc_num": None, "mrz": None})
 
     result = runner.invoke(app, ["fetch-identity", "--json"])
@@ -540,14 +542,13 @@ def test_fetch_identity_disconnects_the_reader(monkeypatch):
 
 def test_fetch_identity_disconnects_even_when_read_fails(monkeypatch):
     # The disconnect lives in a finally, so a read error must still release the reader.
-    import firmauy.cli as cli
 
     conn = _RecordingConn()
 
     def boom(_c):
         raise RuntimeError("read failed")
 
-    monkeypatch.setattr(cli, "open_reader", lambda reader_name=None: conn)
+    monkeypatch.setattr(signing, "open_reader", lambda reader_name=None: conn)
     monkeypatch.setattr(cli, "read_card", boom)
 
     result = runner.invoke(app, ["fetch-identity"])
@@ -680,7 +681,6 @@ def _software_signer() -> SimpleSigner:
 def _run_failing_sign(tmp_path, monkeypatch, out, *, overwrite):
     from pyhanko.sign import signers
 
-    from firmauy import cli
 
     inp = tmp_path / "in.pdf"
     inp.write_bytes(_valid_pdf_bytes())
@@ -725,7 +725,6 @@ def test_sign_pdf_output_symlink_is_replaced_not_followed(tmp_path):
     # so an attacker pre-creating the output as a symlink cannot redirect the write.
     from pyhanko.sign import signers
 
-    from firmauy import cli
 
     inp = tmp_path / "in.pdf"
     inp.write_bytes(_valid_pdf_bytes())
@@ -750,7 +749,6 @@ def test_sign_one_helpers_reject_input_equals_output(tmp_path):
     # The guard lives in the _sign_one_* helpers, so batch mode is covered too (the single
     # commands also guard before the PIN). It fires first, before any signing, so dummy args are
     # fine. This is the data-loss case of sign-*-batch --suffix "" with --output-dir == input dir.
-    from firmauy import cli
 
     p = tmp_path / "a.bin"
     p.write_bytes(b"x")
@@ -783,8 +781,7 @@ class _FakeConn:
 
 
 def _patch_card(monkeypatch, conn):
-    from firmauy import cli
-    monkeypatch.setattr(cli, "open_reader", lambda name=None: conn)
+    monkeypatch.setattr(signing, "open_reader", lambda name=None: conn)
     monkeypatch.setattr(cli, "read_photo", lambda c: _JPEG)
 
 
@@ -794,7 +791,6 @@ def test_fetch_photo_dash_streams_raw_jpeg_to_stdout(monkeypatch):
     import io
     from pathlib import Path
 
-    from firmauy import cli
 
     conn = _FakeConn()
     _patch_card(monkeypatch, conn)
@@ -822,7 +818,6 @@ def test_fetch_photo_dash_refuses_interactive_terminal(monkeypatch, capsys):
 
     import typer
 
-    from firmauy import cli
 
     opened = {"n": 0}
 
@@ -830,7 +825,7 @@ def test_fetch_photo_dash_refuses_interactive_terminal(monkeypatch, capsys):
         opened["n"] += 1
         return _FakeConn()
 
-    monkeypatch.setattr(cli, "open_reader", _should_not_open)
+    monkeypatch.setattr(signing, "open_reader", _should_not_open)
 
     class _Tty:
         def isatty(self):
@@ -849,7 +844,6 @@ def test_fetch_photo_dash_refuses_interactive_terminal(monkeypatch, capsys):
 
 def test_fetch_photo_to_file_writes_bytes_and_reports_on_stdout(tmp_path, monkeypatch, capsys):
     # The default (a path) still writes the JPEG to disk and reports on stdout.
-    from firmauy import cli
 
     conn = _FakeConn()
     _patch_card(monkeypatch, conn)
@@ -866,7 +860,6 @@ def test_fetch_photo_to_file_writes_bytes_and_reports_on_stdout(tmp_path, monkey
 def test_fetch_photo_default_output_when_omitted(tmp_path, monkeypatch, capsys):
     # Omitting the output argument (None from typer) still writes the effective default,
     # cedula_foto.jpg in the current directory.
-    from firmauy import cli
 
     conn = _FakeConn()
     _patch_card(monkeypatch, conn)
@@ -885,10 +878,9 @@ def test_fetch_photo_existing_output_requires_overwrite(tmp_path, monkeypatch, c
     # and its bytes are left untouched.
     import typer
 
-    from firmauy import cli
 
     opened = {"n": 0}
-    monkeypatch.setattr(cli, "open_reader",
+    monkeypatch.setattr(signing, "open_reader",
                         lambda name=None: opened.__setitem__("n", opened["n"] + 1))
 
     out = tmp_path / "foto.jpg"
@@ -904,7 +896,6 @@ def test_fetch_photo_existing_output_requires_overwrite(tmp_path, monkeypatch, c
 
 
 def test_fetch_photo_overwrite_replaces_existing_file(tmp_path, monkeypatch):
-    from firmauy import cli
 
     conn = _FakeConn()
     _patch_card(monkeypatch, conn)
@@ -924,7 +915,6 @@ def test_fetch_photo_overwrite_replaces_existing_file(tmp_path, monkeypatch):
 def test_fetch_photo_json_emits_record_to_stdout(monkeypatch, capsys):
     import base64
 
-    from firmauy import cli
 
     conn = _FakeConn()
     _patch_card(monkeypatch, conn)
@@ -942,7 +932,6 @@ def test_fetch_photo_json_emits_record_to_stdout(monkeypatch, capsys):
 
 
 def test_fetch_photo_json_redact_drops_image_and_hash(monkeypatch, capsys):
-    from firmauy import cli
 
     _patch_card(monkeypatch, _FakeConn())
 
@@ -962,10 +951,9 @@ def test_fetch_photo_json_rejects_file_path(monkeypatch, capsys):
 
     import typer
 
-    from firmauy import cli
 
     opened = {"n": 0}
-    monkeypatch.setattr(cli, "open_reader",
+    monkeypatch.setattr(signing, "open_reader",
                         lambda name=None: opened.__setitem__("n", opened["n"] + 1))
 
     with pytest.raises(typer.Exit):
@@ -983,10 +971,9 @@ def test_fetch_photo_json_rejects_explicit_default_path(monkeypatch, capsys):
 
     import typer
 
-    from firmauy import cli
 
     opened = {"n": 0}
-    monkeypatch.setattr(cli, "open_reader",
+    monkeypatch.setattr(signing, "open_reader",
                         lambda name=None: opened.__setitem__("n", opened["n"] + 1))
 
     with pytest.raises(typer.Exit):
@@ -1003,10 +990,9 @@ def test_fetch_photo_redact_without_json_is_refused(monkeypatch, capsys):
     # card.
     import typer
 
-    from firmauy import cli
 
     opened = {"n": 0}
-    monkeypatch.setattr(cli, "open_reader",
+    monkeypatch.setattr(signing, "open_reader",
                         lambda name=None: opened.__setitem__("n", opened["n"] + 1))
 
     with pytest.raises(typer.Exit):
@@ -1020,10 +1006,9 @@ def test_fetch_photo_redact_without_json_is_refused(monkeypatch, capsys):
 # --- fetch-identity carries the same top-level redacted flag -------------------------------------
 
 def test_fetch_identity_json_carries_redacted_flag(monkeypatch, capsys):
-    from firmauy import cli
 
     card = {"bio": {0x01: "PEREZ"}, "doc_num": None, "mrz": None}
-    monkeypatch.setattr(cli, "open_reader", lambda name=None: _FakeConn())
+    monkeypatch.setattr(signing, "open_reader", lambda name=None: _FakeConn())
     monkeypatch.setattr(cli, "read_card", lambda conn: card)
 
     cli.fetch_identity_cmd(reader_name=None, json_output=True, json_pretty=False, redact=False)
@@ -1080,7 +1065,7 @@ def test_validate_ci_complete_with_redact_conflicts():
 # --- sign / sign-batch: auto-detect + dispatch ----------------------------------------------------
 
 def test_detect_input_kind(tmp_path):
-    from firmauy.cli import _detect_input_kind
+    from firmauy.signing import _detect_input_kind
     (tmp_path / "a.pdf").write_bytes(b"%PDF-1.7\n%body")
     assert _detect_input_kind(tmp_path / "a.pdf") == "pdf"
     (tmp_path / "a.xml").write_bytes(b"\xef\xbb\xbf  \n<?xml version='1.0'?><r/>")   # BOM + ws + decl
@@ -1124,16 +1109,15 @@ class _FakeToken:
 def _patch_signing(monkeypatch):
     """Patch the PKCS#11/cert path so sign/sign-batch reach the dispatch without a card. Returns a
     list that records (kind, output_path) for each worker call."""
-    from firmauy import cli
     calls = []
-    monkeypatch.setattr(cli, "load_pkcs11_lib", lambda lib: object())
-    monkeypatch.setattr(cli, "find_token", lambda lib, label: _FakeToken())
-    monkeypatch.setattr(cli, "get_pin", lambda *a, **k: "1234")
-    monkeypatch.setattr(cli, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
-    monkeypatch.setattr(cli, "get_common_name", lambda name: "SIGNER")
-    monkeypatch.setattr(cli, "normalize_issuer_name", lambda s: "ISSUER")
-    monkeypatch.setattr(cli, "PKCS11Signer", lambda **k: object())
-    monkeypatch.setattr(cli, "_make_raw_signer", lambda session, key_id: (lambda data: b"sig"))
+    monkeypatch.setattr(signing, "load_pkcs11_lib", lambda lib: object())
+    monkeypatch.setattr(signing, "find_token", lambda lib, label: _FakeToken())
+    monkeypatch.setattr(signing, "get_pin", lambda *a, **k: "1234")
+    monkeypatch.setattr(signing, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
+    monkeypatch.setattr(signing, "get_common_name", lambda name: "SIGNER")
+    monkeypatch.setattr(signing, "normalize_issuer_name", lambda s: "ISSUER")
+    monkeypatch.setattr(signing, "PKCS11Signer", lambda **k: object())
+    monkeypatch.setattr(signing, "_make_raw_signer", lambda session, key_id: (lambda data: b"sig"))
     monkeypatch.setattr(cli, "_sign_one_pdf", lambda **k: calls.append(("pdf", k["output_pdf"])))
     monkeypatch.setattr(cli, "_sign_one_xml", lambda **k: calls.append(("xml", k["output_xml"])))
     monkeypatch.setattr(cli, "_sign_one_cms", lambda **k: calls.append(("cms", k["output_p7s"])))
@@ -1226,15 +1210,14 @@ def test_signing_session_yields_context_and_respects_quiet(monkeypatch, capsys):
     # The shared PKCS#11 bootstrap of every sign-* command: open the session, select the cert, print
     # the identity block (unless --quiet), and yield a backend-agnostic context whose lazy factories
     # build the pyHanko / raw signers the command bodies consume.
-    from firmauy import cli
-    monkeypatch.setattr(cli, "load_pkcs11_lib", lambda lib: object())
-    monkeypatch.setattr(cli, "find_token", lambda lib, label: _FakeToken())
-    monkeypatch.setattr(cli, "get_pin", lambda *a, **k: "1234")
-    monkeypatch.setattr(cli, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
-    monkeypatch.setattr(cli, "get_common_name", lambda name: "SIGNER")
-    monkeypatch.setattr(cli, "normalize_issuer_name", lambda s: "ISSUER")
-    monkeypatch.setattr(cli, "PKCS11Signer", lambda **kw: ("pk-signer", kw))
-    monkeypatch.setattr(cli, "_make_raw_signer", lambda session, key_id: ("raw-signer", key_id))
+    monkeypatch.setattr(signing, "load_pkcs11_lib", lambda lib: object())
+    monkeypatch.setattr(signing, "find_token", lambda lib, label: _FakeToken())
+    monkeypatch.setattr(signing, "get_pin", lambda *a, **k: "1234")
+    monkeypatch.setattr(signing, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
+    monkeypatch.setattr(signing, "get_common_name", lambda name: "SIGNER")
+    monkeypatch.setattr(signing, "normalize_issuer_name", lambda s: "ISSUER")
+    monkeypatch.setattr(signing, "PKCS11Signer", lambda **kw: ("pk-signer", kw))
+    monkeypatch.setattr(signing, "_make_raw_signer", lambda session, key_id: ("raw-signer", key_id))
 
     common = dict(native=False, reader=None, pkcs11_lib="lib.so", token_label=None, cert_id=None,
                   pin_source=None, pin_env_var=None, pin_fd=None, tsa_url=None)
@@ -1262,13 +1245,12 @@ def test_signing_session_yields_context_and_respects_quiet(monkeypatch, capsys):
 def test_signing_session_warns_on_backend_mismatched_options(monkeypatch, capsys):
     # The backend-option pre-flight lives inside _signing_session (shared by all 8 sign commands),
     # so no command can forget it: --reader without --native warns on stderr, pre-PIN.
-    from firmauy import cli
-    monkeypatch.setattr(cli, "load_pkcs11_lib", lambda lib: object())
-    monkeypatch.setattr(cli, "find_token", lambda lib, label: _FakeToken())
-    monkeypatch.setattr(cli, "get_pin", lambda *a, **k: "1234")
-    monkeypatch.setattr(cli, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
-    monkeypatch.setattr(cli, "get_common_name", lambda name: "SIGNER")
-    monkeypatch.setattr(cli, "normalize_issuer_name", lambda s: "ISSUER")
+    monkeypatch.setattr(signing, "load_pkcs11_lib", lambda lib: object())
+    monkeypatch.setattr(signing, "find_token", lambda lib, label: _FakeToken())
+    monkeypatch.setattr(signing, "get_pin", lambda *a, **k: "1234")
+    monkeypatch.setattr(signing, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
+    monkeypatch.setattr(signing, "get_common_name", lambda name: "SIGNER")
+    monkeypatch.setattr(signing, "normalize_issuer_name", lambda s: "ISSUER")
 
     with cli._signing_session(native=False, reader="ACS ACR39U 00 00", pkcs11_lib="lib.so",
                               token_label=None, cert_id=None, pin_source=None, pin_env_var=None,
@@ -1299,8 +1281,7 @@ _SIGN_ONE_PDF_ARGS = dict(
 def test_sign_one_pdf_rejects_hybrid_xref_by_default(monkeypatch, tmp_path):
     # A hybrid cross-reference PDF is refused before any signing work, with a message that names
     # both the qpdf workaround and the opt-in flag.
-    from firmauy import cli
-    monkeypatch.setattr(cli, "IncrementalPdfFileWriter", _FakeHybridWriter)
+    monkeypatch.setattr(signing, "IncrementalPdfFileWriter", _FakeHybridWriter)
     src = tmp_path / "in.pdf"
     src.write_bytes(b"%PDF-1.7\n")
 
@@ -1315,15 +1296,14 @@ def test_sign_one_pdf_rejects_hybrid_xref_by_default(monkeypatch, tmp_path):
 def test_sign_one_pdf_allows_hybrid_xref_with_flag(monkeypatch, tmp_path, capsys):
     # --allow-hybrid-xref opens the PDF non-strict and warns instead of refusing; we stop right
     # after the guard (before the real pyHanko machinery) via a sentinel from enumerate_sig_fields.
-    from firmauy import cli
-    monkeypatch.setattr(cli, "IncrementalPdfFileWriter", _FakeHybridWriter)
+    monkeypatch.setattr(signing, "IncrementalPdfFileWriter", _FakeHybridWriter)
 
     class _Sentinel(Exception):
         pass
 
     def _stop(_writer):
         raise _Sentinel
-    monkeypatch.setattr(cli.fields, "enumerate_sig_fields", _stop)
+    monkeypatch.setattr(signing.fields, "enumerate_sig_fields", _stop)
 
     src = tmp_path / "in.pdf"
     src.write_bytes(b"%PDF-1.7\n")

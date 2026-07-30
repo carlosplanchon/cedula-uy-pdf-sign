@@ -265,7 +265,7 @@ def test_native_signer_rejects_truncated_signature():
 
 def test_cli_native_routes_to_native_backend(monkeypatch, tmp_path):
     from typer.testing import CliRunner
-    from firmauy import cli
+    from firmauy import cli, signing
     from firmauy.cli import app
 
     conn = FakeConn()
@@ -273,18 +273,18 @@ def test_cli_native_routes_to_native_backend(monkeypatch, tmp_path):
     recorded = {}
 
     # Native backend seams: reader open, applet select, cert read and PIN verify are all stubbed.
-    monkeypatch.setattr(cli, "open_reader", lambda reader=None: conn)
-    monkeypatch.setattr(cli, "select_applet", lambda c: None)
+    monkeypatch.setattr(signing, "open_reader", lambda reader=None: conn)
+    monkeypatch.setattr(signing, "select_applet", lambda c: None)
     monkeypatch.setattr(native_card, "read_signing_certificate", lambda c: cert)
     monkeypatch.setattr(native_card, "verify_pin", lambda c, pin: recorded.setdefault("pin", pin))
     monkeypatch.setattr(native_card, "make_native_signer", lambda c, ct: object())
-    monkeypatch.setattr(cli, "get_pin", lambda *a, **k: "1234")
+    monkeypatch.setattr(signing, "get_pin", lambda *a, **k: "1234")
     # Record that the CMS worker got the native signer, without doing real CMS signing.
     monkeypatch.setattr(cli, "_sign_one_cms", lambda **k: recorded.setdefault("signed", True))
     # Any PKCS#11 access is a bug in native mode.
     def _boom(*a, **k):
         raise AssertionError("PKCS#11 must not be used with --native")
-    monkeypatch.setattr(cli, "load_pkcs11_lib", _boom)
+    monkeypatch.setattr(signing, "load_pkcs11_lib", _boom)
 
     src = tmp_path / "data.bin"
     src.write_bytes(b"payload")
@@ -304,19 +304,19 @@ def test_cli_native_rejects_expired_certificate(monkeypatch, tmp_path):
     # certificate aborts the native session BEFORE the PIN is ever requested.
     import datetime
     from typer.testing import CliRunner
-    from firmauy import cli
+    from firmauy import signing
     from firmauy.cli import app
 
     conn = FakeConn()
     expired = _make_cert(not_after=datetime.datetime(2021, 1, 1))
 
-    monkeypatch.setattr(cli, "open_reader", lambda reader=None: conn)
-    monkeypatch.setattr(cli, "select_applet", lambda c: None)
+    monkeypatch.setattr(signing, "open_reader", lambda reader=None: conn)
+    monkeypatch.setattr(signing, "select_applet", lambda c: None)
     monkeypatch.setattr(native_card, "read_signing_certificate", lambda c: expired)
 
     def _no_pin(*a, **k):
         raise AssertionError("the PIN must not be requested for an expired certificate")
-    monkeypatch.setattr(cli, "get_pin", _no_pin)
+    monkeypatch.setattr(signing, "get_pin", _no_pin)
 
     src = tmp_path / "data.bin"
     src.write_bytes(b"payload")
@@ -331,13 +331,13 @@ def test_cli_native_rejects_cert_id(monkeypatch, tmp_path):
     # --cert-id pins the signing identity by PKCS#11 object ID, which native mode cannot honor:
     # combining them is a hard error BEFORE any reader or PIN access, not an ignorable warning.
     from typer.testing import CliRunner
-    from firmauy import cli
+    from firmauy import signing
     from firmauy.cli import app
 
     def _boom(*a, **k):
         raise AssertionError("neither the reader nor the PIN may be touched when --cert-id is rejected")
-    monkeypatch.setattr(cli, "open_reader", _boom)
-    monkeypatch.setattr(cli, "get_pin", _boom)
+    monkeypatch.setattr(signing, "open_reader", _boom)
+    monkeypatch.setattr(signing, "get_pin", _boom)
 
     src = tmp_path / "data.bin"
     src.write_bytes(b"payload")

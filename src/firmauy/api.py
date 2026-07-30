@@ -255,7 +255,7 @@ def sign_file(
     ``cert_id`` (hex) pins the signing certificate. ``tsa_url`` adds an RFC 3161 timestamp. With
     ``verify`` the fresh signature is re-checked for integrity (no trust) before returning.
     """
-    from firmauy.cli import (
+    from firmauy.signing import (
         _build_timestamper,
         _sign_one_cms,
         _signing_session,
@@ -327,7 +327,7 @@ def sign_pdf(
     """
     from pyhanko.sign import signers
 
-    from firmauy.cli import (
+    from firmauy.signing import (
         _build_timestamper,
         _sign_one_pdf,
         _signing_session,
@@ -404,7 +404,7 @@ def sign_xml(
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from firmauy.cli import (
+    from firmauy.signing import (
         _build_timestamper,
         _sign_one_xml,
         _signing_session,
@@ -471,7 +471,7 @@ def sign(
     force a type. ``reason``/``location`` only apply when the resolved type is a PDF. Returns a
     :class:`SignReport`; raises on any error.
     """
-    from firmauy.cli import _resolve_sign_kind
+    from firmauy.signing import _resolve_sign_kind
     from firmauy.constants import SignAs
 
     pin, pin_provider = _resolve_pin_args(pin, pin_provider)
@@ -524,7 +524,7 @@ def sign_files(
 
     from pyhanko.sign import signers
 
-    from firmauy.cli import (
+    from firmauy.signing import (
         _build_timestamper,
         _resolve_sign_kind,
         _sign_one_cms,
