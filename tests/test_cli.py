@@ -310,15 +310,16 @@ def _detect_signature_kind_bytes(tmp_path, data: bytes) -> str:
 
 def test_detect_signature_kind_bounds_the_cms_read(tmp_path, monkeypatch):
     # A file beyond the CMS-detection cap is not a detached .p7s and must not be read/parsed whole.
-    import firmauy.cli as cli
+    # _detect_signature_kind and its cap live in firmauy._shared (the CLI re-exports the function).
+    import firmauy._shared as shared
 
     p7s = tmp_path / "sig.p7s"
-    p7s.write_bytes(_software_p7s(b"hi"))              # a real, valid detached CMS
-    assert cli._detect_signature_kind(p7s) == "cms"    # detected normally under the real cap
+    p7s.write_bytes(_software_p7s(b"hi"))                 # a real, valid detached CMS
+    assert shared._detect_signature_kind(p7s) == "cms"    # detected normally under the real cap
 
-    monkeypatch.setattr(cli, "_CMS_DETECT_MAX_BYTES", 16)
+    monkeypatch.setattr(shared, "_CMS_DETECT_MAX_BYTES", 16)
     with pytest.raises(ValueError, match="could not detect"):
-        cli._detect_signature_kind(p7s)                # same file now exceeds the (tiny) budget
+        shared._detect_signature_kind(p7s)                # same file now exceeds the (tiny) budget
 
 
 def test_verify_autodetect_cms_locates_original(tmp_path):

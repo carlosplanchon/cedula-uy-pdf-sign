@@ -213,3 +213,37 @@ def test_sign_xml_batch_signs_all(softhsm_token, tmp_path):
         verified = XMLVerifier().verify(out.read_bytes(), x509_cert=cert_pem, expect_references=2)
         refs = verified if isinstance(verified, list) else [verified]
         assert len(refs) == 2
+
+
+def test_api_sign_xml_direct_pin(softhsm_token, tmp_path, monkeypatch):
+    """firmauy.api.sign_xml signs an XML in-process with a directly supplied PIN (XAdES embedded)."""
+    from firmauy.api import SignReport, sign_xml
+    from firmauy.xml_verify import verify_xml
+
+    module, env, cert = softhsm_token
+    monkeypatch.setenv("SOFTHSM2_CONF", env["SOFTHSM2_CONF"])
+
+    input_xml = tmp_path / "doc.xml"
+    input_xml.write_bytes(
+        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        b'<Documento xmlns="http://example.uy/test"><Dato>hola</Dato></Documento>'
+    )
+    output_xml = tmp_path / "doc_firmado.xml"
+
+    report = sign_xml(
+        input_xml, PIN, native=False, pkcs11_lib=module, token_label=TOKEN_LABEL,
+        output=output_xml, verify=True,
+    )
+
+    assert isinstance(report, SignReport)
+    assert report.output_path == output_xml
+    assert output_xml.exists()
+    assert report.signer == "PEREZ PEREZ JUAN"
+
+    signed = output_xml.read_bytes()
+    assert b"xmldsig-more#rsa-sha256" in signed
+    assert b"QualifyingProperties" in signed
+    # Own verifier: integrity holds (no trust anchors -> INDETERMINATE).
+    res = verify_xml(signed, trust_roots=None)[0]
+    assert res.indication == "INDETERMINATE"
+    assert all(c.ok for c in res.checks)

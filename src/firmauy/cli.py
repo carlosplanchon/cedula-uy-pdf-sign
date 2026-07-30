@@ -4,7 +4,6 @@
 
 import json
 import os
-import shutil
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -41,10 +40,12 @@ from firmauy.card_reader import (
     select_applet,
 )
 from firmauy.cert_utils import (
+    _cert_digital_signature,
+    _cert_record,
+    _redact_cert_record,
     cert_not_after,
     cert_not_before,
     get_common_name,
-    name_fields,
     normalize_issuer_name,
 )
 from firmauy.ci import complete_ci, validate_ci
@@ -75,14 +76,21 @@ from firmauy.pkcs11_utils import (
 from firmauy.national_ca import (
     cache_dir,
     fetch_cas,
-    load_bundled_trust_anchors,
-    load_cached_trust_anchors,
 )
 from firmauy.pdf_verify import verify_pdf
 from firmauy.xml_sign import sign_xml
 from firmauy.xml_verify import verify_xml
 from firmauy.cms_sign import sign_cms_detached
 from firmauy.cms_verify import verify_cms
+from firmauy._shared import (
+    _INDICATION_RANK,
+    _collect_doctor_checks,
+    _detached_original,
+    _detect_signature_kind,
+    _format_error,
+    _resolve_trust_anchors,
+    _resolve_tsa_anchors,
+)
 
 app = typer.Typer(
     help=(
@@ -118,21 +126,6 @@ def _main(
     ] = None,
 ) -> None:
     pass
-
-
-# ---------------------------------------------------------------------------
-# Error formatting
-# ---------------------------------------------------------------------------
-
-def _format_error(exc: Exception) -> str:
-    """Human-readable message for an exception, with friendly text for common
-    PKCS#11 PIN errors (whose own str() is empty)."""
-    import pkcs11.exceptions as pe
-    if isinstance(exc, pe.PinIncorrect):
-        return "Incorrect PIN."
-    if isinstance(exc, pe.PinLocked):
-        return "The PIN is locked (too many incorrect attempts)."
-    return str(exc) or type(exc).__name__
 
 
 # ---------------------------------------------------------------------------
@@ -271,9 +264,27 @@ def _card_connection(reader_name=None):
             pass
 
 
+def _resolve_final_pin(pin, pin_provider, pin_source, pin_env_var, pin_fd) -> str:
+    """Resolve the PIN at the point of use (after the PIN-free certificate read, so the card's
+    retry-limit guard is preserved): a directly-supplied ``pin``, else a lazy ``pin_provider()``
+    callback, else the CLI's ``pin_source``. Rejects an empty PIN before it can reach the card."""
+    if pin is not None:
+        final = pin
+    elif pin_provider is not None:
+        final = pin_provider()
+    else:
+        return get_pin(pin_source, pin_env_var, pin_fd)  # already rejects an empty PIN
+    if not final:
+        raise RuntimeError(
+            "Empty PIN received; aborting before contacting the card "
+            "(an empty PIN would still count toward its retry limit)."
+        )
+    return final
+
+
 @contextmanager
 def _signing_session(*, native, reader, pkcs11_lib, token_label, cert_id, pin_source, pin_env_var,
-                     pin_fd, tsa_url, quiet, pin=None, emit_notes=True):
+                     pin_fd, tsa_url, quiet, pin=None, pin_provider=None, emit_notes=True):
     """Open a signing session with the selected backend and yield a ``_SigningContext``.
 
     Dispatches to the native PC/SC backend (``--native``) or the PKCS#11 backend. Both select the
@@ -293,31 +304,33 @@ def _signing_session(*, native, reader, pkcs11_lib, token_label, cert_id, pin_so
     if native:
         with _native_signing_session(
             reader=reader, pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
-            tsa_url=tsa_url, quiet=quiet, pin=pin,
+            tsa_url=tsa_url, quiet=quiet, pin=pin, pin_provider=pin_provider,
         ) as ctx:
             yield ctx
     else:
         with _pkcs11_signing_session(
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id, pin_source=pin_source,
             pin_env_var=pin_env_var, pin_fd=pin_fd, tsa_url=tsa_url, quiet=quiet, pin=pin,
+            pin_provider=pin_provider,
         ) as ctx:
             yield ctx
 
 
 @contextmanager
 def _pkcs11_signing_session(*, pkcs11_lib, token_label, cert_id, pin_source, pin_env_var, pin_fd,
-                            tsa_url, quiet, pin=None):
+                            tsa_url, quiet, pin=None, pin_provider=None):
     """PKCS#11 backend: load the module, open a PIN session, select the signing certificate and print
     the identity block, then yield the context. The session is closed on exit.
 
-    ``pin`` (when not None) is the already-known PIN, used instead of reading ``pin_source``."""
+    ``pin`` / ``pin_provider`` (when given) supply the PIN directly or lazily instead of reading
+    ``pin_source``."""
     # Validate the hex cert ID up front: a malformed --cert-id must fail before we prompt for the
     # PIN (an incorrect PIN counts toward the card's retry limit), not later inside select_certificate.
     if cert_id is not None:
         normalize_cert_id_hex(cert_id)
     lib = load_pkcs11_lib(pkcs11_lib)
     token = find_token(lib, token_label)
-    final_pin = pin if pin is not None else get_pin(pin_source, pin_env_var, pin_fd)
+    final_pin = _resolve_final_pin(pin, pin_provider, pin_source, pin_env_var, pin_fd)
     with token.open(user_pin=final_pin) as session:
         key_id, cert = select_certificate(session, cert_id)
         signer_name, issuer_name, cert_serial = _cert_display_fields(cert)
@@ -336,14 +349,16 @@ def _pkcs11_signing_session(*, pkcs11_lib, token_label, cert_id, pin_source, pin
 
 
 @contextmanager
-def _native_signing_session(*, reader, pin_source, pin_env_var, pin_fd, tsa_url, quiet, pin=None):
+def _native_signing_session(*, reader, pin_source, pin_env_var, pin_fd, tsa_url, quiet, pin=None,
+                            pin_provider=None):
     """Native PC/SC backend: open the reader, select the applet, read the public signing certificate,
     verify the PIN and yield the context. No PKCS#11 module is loaded. The connection is closed on
     exit. Do not run while a PKCS#11 sign session is open on the same card: both go through pcscd and
     will conflict.
 
-    ``pin`` (when not None) is the already-known PIN, used instead of reading ``pin_source``; it is
-    still verified only after the PIN-free certificate read, preserving the retry-limit guard."""
+    ``pin`` / ``pin_provider`` (when given) supply the PIN directly or lazily instead of reading
+    ``pin_source``; either way it is obtained only after the PIN-free certificate read, preserving
+    the retry-limit guard."""
     from firmauy import native_card
     with _card_connection(reader) as conn:
         select_applet(conn)
@@ -361,7 +376,7 @@ def _native_signing_session(*, reader, pin_source, pin_env_var, pin_fd, tsa_url,
         signer_name, issuer_name, cert_serial = _cert_display_fields(cert)
         # Prompt/read the PIN only after the (PIN-free) cert read succeeds, so a reader/card problem
         # surfaces before we ask for a PIN. verify_pin refuses to spend the card's last retry.
-        final_pin = pin if pin is not None else get_pin(pin_source, pin_env_var, pin_fd)
+        final_pin = _resolve_final_pin(pin, pin_provider, pin_source, pin_env_var, pin_fd)
         native_card.verify_pin(conn, final_pin)
         _print_signing_info(
             # The reader name pyscard resolved, so the identity block records the actual device
@@ -765,41 +780,6 @@ def list_tokens(
 # ---------------------------------------------------------------------------
 # Subcommand: list-certs
 # ---------------------------------------------------------------------------
-
-def _cert_digital_signature(cert) -> Optional[bool]:
-    try:
-        return bool(cert.extensions.get_extension_for_class(x509.KeyUsage).value.digital_signature)
-    except x509.ExtensionNotFound:
-        return None
-
-
-def _cert_record(obj_id_hex: str, cert, include_pem: bool) -> dict:
-    rec = {
-        "id": obj_id_hex,
-        "subject": name_fields(cert.subject),
-        "issuer": name_fields(cert.issuer),
-        "certificate_serial": format(cert.serial_number, "X"),
-        "not_after": cert_not_after(cert),
-        "digital_signature": _cert_digital_signature(cert),
-    }
-    if include_pem:
-        rec["pem"] = cert.public_bytes(Encoding.PEM).decode().strip()
-    return rec
-
-
-def _redact_cert_record(rec: dict) -> dict:
-    """Hide the cardholder's personal data for a shareable listing. The issuer (a public CA) is
-    kept; the certificate serial and the PEM identify the holder, so they are hidden too."""
-    out = dict(rec)
-    out["subject"] = dict(rec["subject"])
-    for k in ("common_name", "serial_number"):
-        if out["subject"].get(k):
-            out["subject"][k] = "[REDACTED]"
-    out["certificate_serial"] = "[REDACTED]"
-    if "pem" in out:
-        out["pem"] = "[REDACTED]"
-    return out
-
 
 @app.command("list-certs")
 def list_certs(
@@ -2106,53 +2086,6 @@ def sign_batch(
 # Verification helpers (shared by verify-xml and verify-pdf)
 # ---------------------------------------------------------------------------
 
-def _resolve_trust_anchors(ca_file: Optional[Path], no_trust: bool):
-    """Return (roots, intermediates): from --ca-file, else the cached national CAs, else the
-    certificates bundled with the package, else (None, None) with a hint. Returns (None, None)
-    when trust is skipped."""
-    if no_trust:
-        return None, None
-    if ca_file is not None:
-        certs = x509.load_pem_x509_certificates(ca_file.read_bytes())
-        roots = [c for c in certs if c.subject == c.issuer]
-        intermediates = [c for c in certs if c.subject != c.issuer]
-        if not roots:
-            raise RuntimeError("--ca-file has no self-signed root certificate.")
-        return roots, intermediates
-    cached_roots, cached_intermediates = load_cached_trust_anchors()
-    if cached_roots:
-        return cached_roots, cached_intermediates
-    bundled_roots, bundled_intermediates = load_bundled_trust_anchors()
-    if bundled_roots:
-        return bundled_roots, bundled_intermediates
-    # Reached only if the bundled trust anchors could not be loaded (e.g. a broken install),
-    # since they are otherwise always present.
-    typer.secho(
-        "Note: the bundled trust anchors could not be loaded; checking signature integrity\n"
-        "      only. Pass --ca-file with the national CAs, or run 'firmauy fetch-cas'.",
-        fg=typer.colors.YELLOW,
-        err=True,
-    )
-    return None, None
-
-
-def _resolve_tsa_anchors(tsa_ca: Optional[Path]):
-    """Return (roots, others) for validating an XAdES-T timestamp's TSA, loaded from --tsa-ca, or
-    (None, None) if not given. Self-signed certs are anchors; the rest are path-building
-    intermediates. With no self-signed cert, all are treated as anchors (the user chose to trust
-    exactly this set)."""
-    if tsa_ca is None:
-        return None, None
-    certs = x509.load_pem_x509_certificates(tsa_ca.read_bytes())
-    if not certs:
-        raise RuntimeError("--tsa-ca contains no certificates.")
-    roots = [c for c in certs if c.subject == c.issuer]
-    others = [c for c in certs if c.subject != c.issuer]
-    if not roots:
-        roots, others = certs, []
-    return roots, others
-
-
 def _display_name(fields: dict, redact: bool = False) -> str:
     """One-line human display of a structured signer/issuer name."""
     if redact and (fields.get("common_name") or fields.get("serial_number")):
@@ -2182,7 +2115,6 @@ _INDICATION_COLOR = {
     "INDETERMINATE": typer.colors.YELLOW,
     "INVALID": typer.colors.RED,
 }
-_INDICATION_RANK = {"VALID": 0, "INDETERMINATE": 1, "INVALID": 2}
 
 # Public, versioned JSON contract for the verify commands (decoupled from the internal
 # VerifyResult dataclass, so it can be refactored without breaking consumers).
@@ -2494,50 +2426,6 @@ def verify_any_cmd(
 # Subcommand: verify (auto-detect)
 # ---------------------------------------------------------------------------
 
-# A detached CMS/.p7s is small (signature + certs, a few KB). Cap how much _detect_signature_kind
-# reads when probing for CMS, so a large unrelated file is not slurped whole just to fail the parse.
-_CMS_DETECT_MAX_BYTES = 8 * 1024 * 1024
-
-
-def _detect_signature_kind(path: Path) -> str:
-    """Detect a signed file's format by content: "pdf", "xml" (XAdES) or "cms" (detached
-    .p7s in DER). Raises ValueError if none match.
-
-    Only a 1 KB prefix is read to recognise PDF or XML; for the CMS (DER) case the read is bounded to
-    _CMS_DETECT_MAX_BYTES -- a detached ``.p7s`` is small, so a larger file is not a detached
-    signature and is not read whole into memory."""
-    from asn1crypto import cms as asn1cms
-
-    with path.open("rb") as f:
-        head = f.read(1024)
-        if not head:
-            raise ValueError("file is empty")
-        # Logical start: skip a UTF-8 BOM and any leading whitespace.
-        start = head.lstrip(b"\xef\xbb\xbf").lstrip()
-        if start[:1] == b"<":
-            return "xml"
-        # The PDF header must be at the (logical) start, not merely somewhere in the first KB, so
-        # an XML or CMS that only *contains* the bytes "%PDF-" is not misdetected as a PDF.
-        if start.startswith(b"%PDF-"):
-            return "pdf"
-        # Not PDF/XML: read the rest (bounded) and try to parse it as detached CMS (DER). The +1
-        # lets an over-cap file produce len(raw) > cap so it is skipped rather than parsed truncated.
-        raw = head + f.read(max(0, _CMS_DETECT_MAX_BYTES - len(head)) + 1)
-    if len(raw) <= _CMS_DETECT_MAX_BYTES:
-        try:
-            ci = asn1cms.ContentInfo.load(raw)
-            if ci["content_type"].native == "signed_data":
-                return "cms"
-        except Exception:
-            pass
-    raise ValueError("could not detect the signature type (not a PDF, XAdES XML or CMS/.p7s)")
-
-
-def _detached_original(p7s_path: Path) -> Optional[Path]:
-    """The original file a detached .p7s signs, by the '<x>.p7s -> <x>' convention."""
-    return p7s_path.with_suffix("") if p7s_path.suffix == ".p7s" else None
-
-
 @app.command("verify")
 def verify_cmd(
     input_file: Path = typer.Argument(..., exists=True, readable=True, dir_okay=False,
@@ -2677,9 +2565,6 @@ def fetch_cas_cmd(
 # Subcommand: doctor
 # ---------------------------------------------------------------------------
 
-_PCSCD_SOCKETS = ("/run/pcscd/pcscd.comm", "/var/run/pcscd/pcscd.comm")
-
-
 def _doctor_emit(checks: list, json_output: bool, pretty: bool = False) -> bool:
     """Print the diagnostic checks; return True if there are no FAILs (WARN does not fail)."""
     ok = all(c["status"] != "FAIL" for c in checks)
@@ -2702,120 +2587,6 @@ def _doctor_emit(checks: list, json_output: bool, pretty: bool = False) -> bool:
     else:
         typer.secho("No blocking failures (see the warnings above).", fg=typer.colors.YELLOW, bold=True)
     return ok
-
-
-def _doctor_pkcs11(add, pkcs11_lib: str) -> None:
-    """PKCS#11-backend checks: the middleware module and the token it exposes."""
-    lib = None
-    if Path(pkcs11_lib).exists():
-        add("PASS", "PKCS#11 module present", pkcs11_lib)
-        try:
-            lib = load_pkcs11_lib(pkcs11_lib)
-            add("PASS", "PKCS#11 module loads")
-        except Exception as exc:
-            add("FAIL", "PKCS#11 module loads", _format_error(exc),
-                fix="The module is present but could not be initialised; check the middleware install.")
-    else:
-        add("FAIL", "PKCS#11 module present", f"not found: {pkcs11_lib}",
-            fix="Install the middleware (Arch: yay -S cedula-uruguay-pkcs11), or pass --pkcs11-lib.")
-
-    if lib is None:
-        return
-    try:
-        tokens = list(lib.get_tokens())
-    except Exception:
-        tokens = []
-    if tokens:
-        label = (getattr(tokens[0], "label", "") or "").strip() or "<no label>"
-        extra = f" (+{len(tokens) - 1} more)" if len(tokens) > 1 else ""
-        add("PASS", "cédula token detected", f"{label}{extra}")
-    else:
-        add("WARN", "cédula token detected", "no card found",
-            fix="Insert the cédula and check the reader connection / pcscd.")
-
-
-def _doctor_native(add, reader: Optional[str]) -> None:
-    """Native (PC/SC) checks: a reader is present and the cédula answers, no PKCS#11 module."""
-    from firmauy.card_reader import list_readers, open_reader, select_applet
-
-    try:
-        available = list_readers()
-    except Exception as exc:
-        add("WARN", "PC/SC reader detected", _format_error(exc),
-            fix="Install the smart-card stack (sudo pacman -S pcsclite ccid) and start pcscd.")
-        return
-    if not available:
-        add("WARN", "PC/SC reader detected", "none found",
-            fix="Connect a reader and make sure pcscd is running.")
-        return
-    add("PASS", "PC/SC reader detected", ", ".join(str(r) for r in available))
-
-    # Confirm the cédula answers over PC/SC: open the reader and select the IAS applet (no PIN).
-    try:
-        conn = open_reader(reader)
-    except Exception as exc:
-        add("WARN", "cédula detected", _format_error(exc),
-            fix="Insert the cédula, or pass --reader if you have more than one reader.")
-        return
-    try:
-        select_applet(conn)
-        add("PASS", "cédula detected", "IAS applet selected")
-    except Exception as exc:
-        add("WARN", "cédula detected", _format_error(exc),
-            fix="A card is present but did not answer as a cédula; check it is the right card.")
-    finally:
-        try:
-            conn.disconnect()
-        except Exception:
-            pass
-
-
-def _collect_doctor_checks(native: bool, reader: Optional[str], pkcs11_lib: str) -> list:
-    """Gather every diagnostic check as a list of ``{status, name, detail, fix}`` dicts.
-
-    Pure data gathering: it probes the environment but does no printing and never exits, so the
-    ``doctor`` CLI command and the public API (:func:`firmauy.api.run_doctor`) share one source
-    of truth. ``status`` is PASS / WARN / FAIL. With ``native`` the PC/SC reader and card are
-    checked; otherwise the PKCS#11 middleware module at ``pkcs11_lib``.
-    """
-    import platform
-    from importlib.metadata import PackageNotFoundError
-    from importlib.metadata import version as _pkg_version
-
-    checks: list = []
-
-    def add(status: str, name: str, detail: str = "", fix: Optional[str] = None) -> None:
-        checks.append({"status": status, "name": name, "detail": detail, "fix": fix})
-
-    try:
-        v = _pkg_version("firmauy")
-    except PackageNotFoundError:
-        v = "unknown"
-    add("PASS", "firmauy", f"{v} (Python {platform.python_version()})")
-
-    # pcscd is needed by both backends (the PKCS#11 middleware and native both talk via pcscd).
-    if any(Path(s).exists() for s in _PCSCD_SOCKETS):
-        add("PASS", "pcscd running")
-    elif shutil.which("pcscd"):
-        add("WARN", "pcscd running", "installed but not running",
-            fix="Start it: sudo systemctl enable --now pcscd")
-    else:
-        add("WARN", "pcscd running", "not found",
-            fix="Install the smart-card stack: sudo pacman -S pcsclite ccid")
-
-    if native:
-        _doctor_native(add, reader)
-    else:
-        _doctor_pkcs11(add, pkcs11_lib)
-
-    roots, intermediates = load_bundled_trust_anchors()
-    if roots and intermediates:
-        add("PASS", "bundled national CA certificates", "root + intermediate loaded")
-    else:
-        add("FAIL", "bundled national CA certificates", "not loadable",
-            fix="The package install looks broken; reinstall firmauy.")
-
-    return checks
 
 
 @app.command("doctor")

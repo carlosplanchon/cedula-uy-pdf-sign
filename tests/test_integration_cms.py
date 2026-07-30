@@ -258,3 +258,32 @@ def test_api_sign_file_rejects_empty_pin(tmp_path):
     f.write_bytes(b"data")
     with pytest.raises(ValueError, match="non-empty PIN"):
         sign_file(f, "", native=False)
+
+
+def test_api_sign_file_with_pin_provider(softhsm_token, tmp_path, monkeypatch):
+    """firmauy.api.sign_file accepts a lazy pin_provider callback instead of a direct pin=.
+
+    The provider is invoked only at the point of use (after the PIN-free cert read), which lets a
+    GUI prompt on demand. Exactly one of pin / pin_provider is required."""
+    from firmauy.api import SignReport, sign_file
+
+    module, env, cert = softhsm_token
+    monkeypatch.setenv("SOFTHSM2_CONF", env["SOFTHSM2_CONF"])
+
+    input_file = tmp_path / "payload-provider.bin"
+    input_file.write_bytes(b"lazy pin contents\n")
+
+    calls = []
+
+    def provider():
+        calls.append(1)
+        return PIN
+
+    report = sign_file(
+        input_file, native=False, pin_provider=provider,
+        pkcs11_lib=module, token_label=TOKEN_LABEL, verify=True,
+    )
+
+    assert isinstance(report, SignReport)
+    assert report.output_path.exists()
+    assert calls == [1]  # invoked exactly once, lazily

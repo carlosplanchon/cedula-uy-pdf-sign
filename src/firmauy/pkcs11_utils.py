@@ -235,3 +235,21 @@ def select_certificate(
 
     cert_candidates.sort(key=score, reverse=True)
     return cert_candidates[0]
+
+
+def token_to_dict(token) -> dict:
+    """Structured view of a PKCS#11 token: ``label``, ``manufacturer``, ``model`` and ``serial``.
+
+    Each value is the trimmed attribute or ``None`` when empty (the display sentinels such as
+    ``<no label>`` / ``-`` are a CLI concern, not part of the data). Shared by the ``list-tokens``
+    command and :func:`firmauy.api.list_tokens`."""
+    def _attr(name: str) -> Optional[str]:
+        val = (getattr(token, name, "") or "").strip()
+        return val or None
+
+    return {
+        "label": _attr("label"),
+        "manufacturer": _attr("manufacturer"),
+        "model": _attr("model"),
+        "serial": _attr("serial"),
+    }

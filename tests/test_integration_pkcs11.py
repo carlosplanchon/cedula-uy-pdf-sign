@@ -293,6 +293,47 @@ def test_sign_via_softhsm_produces_valid_signature(softhsm, sample_pdf, tmp_path
         assert status.coverage.name == "ENTIRE_FILE"
 
 
+def test_api_sign_pdf_direct_pin(softhsm, sample_pdf, tmp_path, monkeypatch):
+    """firmauy.api.sign_pdf signs a PDF in-process with a directly supplied PIN (PAdES embedded).
+
+    The desktop app calls this for PDFs so the user gets a signed PDF back, not a detached .p7s."""
+    from firmauy.api import SignReport, sign_pdf
+
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+    # The API loads the PKCS#11 module in this process, so SoftHSM reads its config from the env.
+    monkeypatch.setenv("SOFTHSM2_CONF", softhsm.env["SOFTHSM2_CONF"])
+
+    output_pdf = tmp_path / "signed_api.pdf"
+    report = sign_pdf(
+        sample_pdf, PIN, native=False,
+        pkcs11_lib=softhsm.module, token_label="test-cedula", output=output_pdf,
+    )
+
+    assert isinstance(report, SignReport)
+    assert report.output_path == output_pdf
+    assert output_pdf.exists()
+    assert report.signer == "PEREZ PEREZ JUAN"
+
+    # The signature is embedded in the PDF, intact, and covers the whole file.
+    from pyhanko.pdf_utils.reader import PdfFileReader
+    from pyhanko.sign.validation import validate_pdf_signature
+    from pyhanko_certvalidator import ValidationContext
+
+    with output_pdf.open("rb") as f:
+        reader = PdfFileReader(f)
+        embedded = reader.embedded_signatures
+        assert len(embedded) == 1
+        status = validate_pdf_signature(embedded[0], ValidationContext(allow_fetching=False))
+        assert status.intact
+        assert status.valid
+        assert status.coverage.name == "ENTIRE_FILE"
+
+
 def test_sign_with_image_appearance_stays_valid(softhsm, sample_pdf, tmp_path):
     key, cert = _write_cert(
         tmp_path, "identity",
@@ -633,3 +674,124 @@ def test_hybrid_xref_pdf_rejected_then_signed_and_verified(softhsm, hybrid_pdf, 
     assert "signature intact (covered bytes unmodified)" in passed
     assert "signature cryptographically valid" in passed
     assert any("hybrid cross-reference" in c.name for c in res.checks)   # relaxed-mode note present
+
+
+def test_api_sign_auto_signs_pdf_as_pades(softhsm, sample_pdf, tmp_path, monkeypatch):
+    """firmauy.api.sign auto-detects a PDF and signs it as embedded PAdES."""
+    from firmauy.api import SignReport, sign
+
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+    monkeypatch.setenv("SOFTHSM2_CONF", softhsm.env["SOFTHSM2_CONF"])
+
+    out = tmp_path / "auto_signed.pdf"
+    report = sign(
+        sample_pdf, PIN, native=False,
+        pkcs11_lib=softhsm.module, token_label="test-cedula", output=out, verify=True,
+    )
+
+    assert isinstance(report, SignReport)
+    assert report.output_path == out
+    assert report.signer == "PEREZ PEREZ JUAN"
+    from pyhanko.pdf_utils.reader import PdfFileReader
+    with out.open("rb") as f:
+        assert len(PdfFileReader(f).embedded_signatures) == 1
+
+
+def test_api_sign_files_mixed_one_session(softhsm, sample_pdf, tmp_path, monkeypatch):
+    """firmauy.api.sign_files signs a PDF, an XML and a binary in one session (three SignReports)."""
+    from firmauy.api import SignReport, sign_files
+
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+    monkeypatch.setenv("SOFTHSM2_CONF", softhsm.env["SOFTHSM2_CONF"])
+
+    xml = tmp_path / "d.xml"
+    xml.write_bytes(b'<?xml version="1.0" encoding="UTF-8"?>\n<D xmlns="http://x.uy"><a>1</a></D>')
+    blob = tmp_path / "d.bin"
+    blob.write_bytes(b"arbitrary bytes")
+
+    reports = sign_files(
+        [sample_pdf, xml, blob], PIN, native=False,
+        pkcs11_lib=softhsm.module, token_label="test-cedula",
+    )
+
+    assert len(reports) == 3
+    assert all(isinstance(r, SignReport) for r in reports)
+    # Default output name/type per input kind.
+    assert reports[0].output_path.suffix == ".pdf"
+    assert reports[0].output_path.stem.endswith("_firmado")
+    assert reports[1].output_path.name.endswith("_firmado.xml")
+    assert reports[2].output_path.name.endswith(".bin.p7s")
+    for r in reports:
+        assert r.output_path.exists()
+
+
+def test_api_list_tokens_and_certs(softhsm, tmp_path, monkeypatch):
+    """firmauy.api.list_tokens / list_certs introspect a SoftHSM token in-process (no PIN)."""
+    from firmauy.api import CertInfo, TokenInfo, list_certs, list_tokens
+
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+    monkeypatch.setenv("SOFTHSM2_CONF", softhsm.env["SOFTHSM2_CONF"])
+
+    tokens = list_tokens(pkcs11_lib=softhsm.module)
+    assert any(isinstance(t, TokenInfo) and t.label == "test-cedula" for t in tokens)
+
+    certs = list_certs(pkcs11_lib=softhsm.module, token_label="test-cedula", include_pem=True)
+    assert len(certs) == 1
+    cert_info = certs[0]
+    assert isinstance(cert_info, CertInfo)
+    assert cert_info.id == "01"
+    assert cert_info.subject["common_name"] == "PEREZ PEREZ JUAN"
+    assert cert_info.issuer["common_name"] == MI_ISSUER
+    assert cert_info.digital_signature is True
+    assert x509.load_pem_x509_certificate(cert_info.pem.encode())  # PEM is parseable
+
+    # cert_id filter: keeps the match, drops non-matches.
+    assert len(list_certs(pkcs11_lib=softhsm.module, token_label="test-cedula", cert_id="01")) == 1
+    assert list_certs(pkcs11_lib=softhsm.module, token_label="test-cedula", cert_id="99") == []
+
+
+def test_api_sign_files_pin_provider_called_once(softhsm, sample_pdf, tmp_path, monkeypatch):
+    """sign_files invokes pin_provider exactly once for the whole batch (one session, one PIN)."""
+    from firmauy.api import sign_files
+
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+    monkeypatch.setenv("SOFTHSM2_CONF", softhsm.env["SOFTHSM2_CONF"])
+
+    blob = tmp_path / "a.bin"
+    blob.write_bytes(b"x")
+    xml = tmp_path / "b.xml"
+    xml.write_bytes(b'<?xml version="1.0" encoding="UTF-8"?>\n<D xmlns="http://x.uy"><a>1</a></D>')
+
+    calls = []
+
+    def provider():
+        calls.append(1)
+        return PIN
+
+    reports = sign_files(
+        [sample_pdf, xml, blob], native=False, pin_provider=provider,
+        pkcs11_lib=softhsm.module, token_label="test-cedula",
+    )
+
+    assert len(reports) == 3
+    assert calls == [1]  # one PIN check for the whole batch, not one per file

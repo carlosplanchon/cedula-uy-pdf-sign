@@ -7,6 +7,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from firmauy.cert_utils import (
+    _cert_digital_signature,
+    _cert_record,
+    _redact_cert_record,
     cert_not_after,
     get_common_name,
     name_fields,
@@ -96,3 +99,65 @@ class TestCertNotAfter:
         result = cert_not_after(cert_expired)
         date = datetime.date.fromisoformat(result)
         assert date < datetime.date.today()
+
+
+def _build_cert(*, cn="PEREZ JUAN", serial_number="DNI123", digital_signature=True,
+                with_key_usage=True):
+    """A self-signed cert for the record helpers, optionally with a KeyUsage extension."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, cn),
+        x509.NameAttribute(NameOID.SERIAL_NUMBER, serial_number),
+    ])
+    issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "CA MI")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    builder = (
+        x509.CertificateBuilder().subject_name(subject).issuer_name(issuer)
+        .public_key(key.public_key()).serial_number(0xABCDEF)
+        .not_valid_before(now).not_valid_after(now + datetime.timedelta(days=1))
+    )
+    if with_key_usage:
+        builder = builder.add_extension(
+            x509.KeyUsage(
+                digital_signature=digital_signature, content_commitment=True,
+                key_encipherment=False, data_encipherment=False, key_agreement=False,
+                key_cert_sign=False, crl_sign=False, encipher_only=False, decipher_only=False,
+            ),
+            critical=True,
+        )
+    return builder.sign(key, hashes.SHA256())
+
+
+class TestCertRecord:
+    def test_record_has_all_fields(self):
+        cert = _build_cert()
+        rec = _cert_record("01", cert, include_pem=True)
+        assert rec["id"] == "01"
+        assert rec["subject"] == {
+            "common_name": "PEREZ JUAN", "serial_number": "DNI123",
+            "organization": None, "country": None,
+        }
+        assert rec["issuer"]["common_name"] == "CA MI"
+        assert rec["certificate_serial"] == format(cert.serial_number, "X")
+        assert rec["not_after"] == cert_not_after(cert)
+        assert rec["digital_signature"] is True
+        assert rec["pem"].startswith("-----BEGIN CERTIFICATE-----")
+
+    def test_record_omits_pem_by_default(self):
+        assert "pem" not in _cert_record("02", _build_cert(), include_pem=False)
+
+    def test_digital_signature_true_false_and_absent(self):
+        assert _cert_digital_signature(_build_cert(digital_signature=True)) is True
+        assert _cert_digital_signature(_build_cert(digital_signature=False)) is False
+        assert _cert_digital_signature(_build_cert(with_key_usage=False)) is None
+
+    def test_redact_hides_holder_and_keeps_issuer(self):
+        rec = _cert_record("01", _build_cert(), include_pem=True)
+        red = _redact_cert_record(rec)
+        assert red["subject"]["common_name"] == "[REDACTED]"
+        assert red["subject"]["serial_number"] == "[REDACTED]"
+        assert red["certificate_serial"] == "[REDACTED]"
+        assert red["pem"] == "[REDACTED]"
+        assert red["issuer"]["common_name"] == "CA MI"  # a public CA, kept
+        # The original record is not mutated.
+        assert rec["subject"]["common_name"] == "PEREZ JUAN"

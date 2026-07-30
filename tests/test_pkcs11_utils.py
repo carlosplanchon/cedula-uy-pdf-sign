@@ -12,6 +12,7 @@ from firmauy.pkcs11_utils import (
     cert_not_yet_valid,
     has_private_key,
     normalize_cert_id_hex,
+    token_to_dict,
 )
 
 
@@ -107,3 +108,22 @@ class TestCertNotYetValid:
         cert = _future_cert()
         assert cert_not_yet_valid(cert) is True
         assert cert_is_expired(cert) is False   # future != expired
+
+
+class TestTokenToDict:
+    def test_maps_attributes_and_nulls_empty(self):
+        from types import SimpleNamespace
+
+        tok = SimpleNamespace(
+            label="  test-cedula ", manufacturer="ACME", model="", serial="   ",
+        )
+        assert token_to_dict(tok) == {
+            "label": "test-cedula", "manufacturer": "ACME", "model": None, "serial": None,
+        }
+
+    def test_missing_attributes_become_none(self):
+        from types import SimpleNamespace
+
+        assert token_to_dict(SimpleNamespace()) == {
+            "label": None, "manufacturer": None, "model": None, "serial": None,
+        }
