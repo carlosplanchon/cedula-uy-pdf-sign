@@ -83,12 +83,13 @@ Arch Linux by the `cedula-uruguay-pkcs11` AUR package. Install it as shown in
 > See [Native signing](docs/usage.md#native-signing-no-pkcs11-middleware) and the
 > [card protocol reference](docs/card-protocol.md).
 
-> **OpenSC backend (in progress):** [@nicolasgutierrezdev](https://github.com/nicolasgutierrezdev)
-> and I are bringing support for the Uruguayan cédula to
-> [OpenSC](https://github.com/OpenSC/OpenSC), the open-source smart-card framework, so the card can
-> be used through a fully open-source PKCS#11 module (`opensc-pkcs11.so`) instead of the proprietary
-> `libgclib.so`. The driver is already merged upstream but not yet in a released version, so for now
-> you build OpenSC from source. See [Signing with the OpenSC backend](docs/opensc-backend.md).
+> **OpenSC backend (merged upstream, pending release):**
+> [@nicolasgutierrezdev](https://github.com/nicolasgutierrezdev) and I added support for the
+> Uruguayan cédula to [OpenSC](https://github.com/OpenSC/OpenSC), the open-source smart-card
+> framework, so the card can be used through a fully open-source PKCS#11 module (`opensc-pkcs11.so`)
+> instead of the proprietary `libgclib.so`. The driver is merged upstream and signs end to end. It
+> is not in a released OpenSC version yet, so for now you build from source. See
+> [Signing with the OpenSC backend](docs/opensc-backend.md).
 
 ## Setup on Arch Linux
 
