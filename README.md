@@ -212,6 +212,7 @@ is documented in **[docs/api.md](docs/api.md)**.
 - **[Card protocol reference](docs/card-protocol.md)**: the cédula's data model and the APDU-level signing protocol behind `--native` (native, PKCS#11-free signing).
 - **[OpenSC backend](docs/opensc-backend.md)**: build OpenSC from source and sign through the fully open-source `opensc-pkcs11.so` module instead of the proprietary middleware.
 - **[Library API](docs/api.md)**: the full `firmauy.api` reference: signing every format (single and batch), verification, reading the cédula, listing readers, tokens and certificates, diagnostics, and the typed reports and errors.
+- **[Architecture](ARCHITECTURE.md)**: the layer boundaries and invariants: the presentation-free engine, the adapters on top, the PIN path and the error design.
 - **[Development](docs/development.md)**: running from source with `uv`, the test suite, and developing without the card (SoftHSM2).
 
 ## Security considerations
