@@ -161,7 +161,23 @@ for check in report.checks:
 `native=True` (default) checks the PC/SC reader and card that native signing uses. Set it False to
 check the PKCS#11 middleware module at `pkcs11_lib` instead.
 
-Returns a `DoctorReport(ok, checks)`, where each check is a `DoctorCheck(status, name, detail, fix)`.
+Returns a `DoctorReport(ok, checks)`, where each check is a
+`DoctorCheck(status, name, detail, fix, sensitive)`.
+
+`sensitive` marks a check whose `detail` can carry the cardholder's own data, so a consumer that
+must not leak it (an MCP server handing results to a model, a log shipper) can decide without
+parsing text:
+
+```python
+for check in run_doctor().checks:
+    detail = "[REDACTED]" if check.sensitive else check.detail
+    print(check.status, check.name, detail)
+```
+
+Today only the token-label check is marked, because some PKCS#11 modules use the holder's name for
+it while others report a generic string, and the consumer cannot tell which. Every check carries the
+key (in the API and in the CLI's `--json`), so a consumer can treat a missing one as sensitive and
+fail closed.
 
 ## Read the cédula
 

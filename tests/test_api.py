@@ -78,3 +78,36 @@ def test_fetch_cas_wraps_the_paths_and_cache_dir(monkeypatch, tmp_path):
     assert bundle.root_path == root
     assert bundle.intermediate_path == intermediate
     assert bundle.cache_dir == tmp_path
+
+
+def test_doctor_marks_only_the_token_check_as_sensitive(monkeypatch):
+    """The diagnostic contract: every check says whether its detail can carry the cardholder's
+    data, so a consumer never has to infer it from the check's name."""
+    import firmauy._shared as shared
+    from firmauy.api import run_doctor
+
+    raw = [
+        {"status": "PASS", "name": "firmauy", "detail": "1.9.0", "fix": None, "sensitive": False},
+        {"status": "PASS", "name": "cédula token detected", "detail": "PEREZ PEREZ JUAN",
+         "fix": None, "sensitive": True},
+    ]
+    monkeypatch.setattr(shared, "_collect_doctor_checks", lambda *a, **k: raw)
+
+    checks = run_doctor().checks
+    assert [c.sensitive for c in checks] == [False, True]
+    # The flag travels on the dataclass, so an API consumer sees the same contract as --json.
+    assert checks[1].detail == "PEREZ PEREZ JUAN"
+
+
+def test_every_collected_check_carries_the_sensitive_flag(monkeypatch):
+    """No check may omit the key: a consumer that fails closed on a missing one must never be
+    tripped by our own output."""
+    import firmauy._shared as shared
+
+    monkeypatch.setattr(shared, "_doctor_pkcs11", lambda add, lib: add(
+        "PASS", "cédula token detected", "SOME LABEL", sensitive=True))
+    checks = shared._collect_doctor_checks(False, None, "/nonexistent.so")
+
+    assert checks, "expected at least the version and pcscd checks"
+    assert all("sensitive" in c for c in checks)
+    assert sum(c["sensitive"] for c in checks) == 1     # only the token label

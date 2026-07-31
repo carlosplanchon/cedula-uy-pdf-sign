@@ -162,7 +162,10 @@ def _doctor_pkcs11(add, pkcs11_lib: str) -> None:
     if tokens:
         label = (getattr(tokens[0], "label", "") or "").strip() or "<no label>"
         extra = f" (+{len(tokens) - 1} more)" if len(tokens) > 1 else ""
-        add("PASS", "cédula token detected", f"{label}{extra}")
+        # The token label is the cardholder's name with some modules (OpenSC's cédula driver does
+        # this), and a generic string with others. Marked sensitive either way: the consumer cannot
+        # tell which module produced it, and must not have to guess.
+        add("PASS", "cédula token detected", f"{label}{extra}", sensitive=True)
     else:
         add("WARN", "cédula token detected", "no card found",
             fix="Insert the cédula and check the reader connection / pcscd.")
@@ -205,12 +208,18 @@ def _doctor_native(add, reader: Optional[str]) -> None:
 
 
 def _collect_doctor_checks(native: bool, reader: Optional[str], pkcs11_lib: str) -> list:
-    """Gather every diagnostic check as a list of ``{status, name, detail, fix}`` dicts.
+    """Gather every diagnostic check as a list of ``{status, name, detail, fix, sensitive}`` dicts.
 
     Pure data gathering: it probes the environment but does no printing and never exits, so the
     ``doctor`` CLI command and the public API (:func:`firmauy.api.run_doctor`) share one source
     of truth. ``status`` is PASS / WARN / FAIL. With ``native`` the PC/SC reader and card are
     checked; otherwise the PKCS#11 middleware module at ``pkcs11_lib``.
+
+    ``sensitive`` says whether ``detail`` can carry the cardholder's own data, so a consumer that
+    must not leak it (an MCP server handing results to a model, a log shipper) can decide without
+    parsing text. It is set per check rather than inferred: only the token label is marked, because
+    some PKCS#11 modules use the holder's name for it. Every check carries the key, so a consumer
+    can treat a missing one as sensitive and fail closed.
     """
     import platform
     from importlib.metadata import PackageNotFoundError
@@ -218,8 +227,10 @@ def _collect_doctor_checks(native: bool, reader: Optional[str], pkcs11_lib: str)
 
     checks: list = []
 
-    def add(status: str, name: str, detail: str = "", fix: Optional[str] = None) -> None:
-        checks.append({"status": status, "name": name, "detail": detail, "fix": fix})
+    def add(status: str, name: str, detail: str = "", fix: Optional[str] = None,
+            sensitive: bool = False) -> None:
+        checks.append({"status": status, "name": name, "detail": detail, "fix": fix,
+                       "sensitive": sensitive})
 
     try:
         v = _pkg_version("firmauy")

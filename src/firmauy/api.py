@@ -48,12 +48,18 @@ class VerifyReport:
 
 @dataclass(frozen=True)
 class DoctorCheck:
-    """One environment check: ``status`` is PASS / WARN / FAIL, ``fix`` a hint when not PASS."""
+    """One environment check: ``status`` is PASS / WARN / FAIL, ``fix`` a hint when not PASS.
+
+    ``sensitive`` marks a check whose ``detail`` can carry the cardholder's own data (the token
+    label is the holder's name with some PKCS#11 modules), so a consumer that must not leak it can
+    decide without parsing the text.
+    """
 
     status: str
     name: str
     detail: str = ""
     fix: Optional[str] = None
+    sensitive: bool = False
 
 
 @dataclass(frozen=True)
@@ -238,7 +244,11 @@ def run_doctor(
 
     lib = str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB
     raw = _collect_doctor_checks(native, str(reader) if reader is not None else None, lib)
-    checks = [DoctorCheck(c["status"], c["name"], c.get("detail", ""), c.get("fix")) for c in raw]
+    checks = [
+        DoctorCheck(c["status"], c["name"], c.get("detail", ""), c.get("fix"),
+                    c.get("sensitive", False))
+        for c in raw
+    ]
     ok = all(c.status != "FAIL" for c in checks)
     return DoctorReport(ok=ok, checks=checks)
 
