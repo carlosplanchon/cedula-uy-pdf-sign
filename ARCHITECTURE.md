@@ -122,7 +122,9 @@ FirmaUY is the engine of a small family of projects around the Uruguayan cédula
 - FirmaUY Desktop, a Qt application for non-technical users. It imports `firmauy.api` in
   process, which is why the facade returns data and never prints.
 - `firmauy-mcp-inspect`, a read-only MCP adapter for AI assistants. It deliberately gets no
-  signing capability, an authority boundary rather than a technical one.
+  signing capability, an authority boundary rather than a technical one. It is the one consumer
+  that should **not** import `firmauy.api`: it runs the CLI as a subprocess, so signing and
+  cardholder-data reading are absent from its process rather than merely uncalled.
 
 ## Where to start reading
 
