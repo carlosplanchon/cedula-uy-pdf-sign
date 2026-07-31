@@ -2031,6 +2031,13 @@ def doctor_cmd(
     With --native, checks the PC/SC reader and card that native signing uses, instead of the
     PKCS#11 middleware module. Exit code: 0 if there are no FAILs, 1 otherwise (warnings do
     not fail)."""
+    # Same pre-flight courtesy the sign commands get from the signing session: say so (on stderr,
+    # so --json stdout stays clean) when an option does not apply to the chosen mode, instead of
+    # silently ignoring it. Wording matches _check_backend_options for consistency.
+    if native and pkcs11_lib != DEFAULT_PKCS11_LIB:
+        _warn("Note: --pkcs11-lib is ignored with --native (no PKCS#11 module is used).")
+    if not native and reader is not None:
+        _warn("Note: --reader only applies to --native; it is ignored with the PKCS#11 backend.")
     checks = _collect_doctor_checks(native, reader, pkcs11_lib)
     if not _doctor_emit(checks, json_output or json_pretty, pretty=json_pretty):
         raise typer.Exit(code=1)

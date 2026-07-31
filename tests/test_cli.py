@@ -1324,3 +1324,28 @@ def test_sign_one_pdf_allows_hybrid_xref_with_flag(monkeypatch, tmp_path):
     assert _FakeHybridWriter.last_strict is False                # opened non-strict to allow signing
     joined = " ".join(notes)
     assert "hybrid cross-reference sections" in joined and "--allow-hybrid-xref" in joined
+
+
+def test_doctor_notes_options_that_do_not_apply(monkeypatch):
+    """doctor gets the same pre-flight courtesy as the sign commands: an option that does not
+    apply to the chosen mode is called out on stderr instead of silently ignored."""
+    monkeypatch.setattr(
+        cli, "_collect_doctor_checks",
+        lambda native, reader, lib: [{"status": "PASS", "name": "stub", "detail": "", "fix": None}],
+    )
+
+    # --pkcs11-lib alongside --native: the native checks use no PKCS#11 module.
+    r = runner.invoke(app, ["doctor", "--native", "--pkcs11-lib", "/custom/module.so"])
+    assert r.exit_code == 0
+    assert "--pkcs11-lib is ignored with --native" in r.output
+
+    # --reader without --native: the PKCS#11 checks use no PC/SC reader.
+    r = runner.invoke(app, ["doctor", "--reader", "ACS ACR 38U-CCID 00 00"])
+    assert r.exit_code == 0
+    assert "--reader only applies to --native" in r.output
+
+    # Coherent invocations stay note-free.
+    for args in (["doctor", "--native"], ["doctor", "--pkcs11-lib", "/custom/module.so"]):
+        r = runner.invoke(app, args)
+        assert r.exit_code == 0
+        assert "Note:" not in r.output

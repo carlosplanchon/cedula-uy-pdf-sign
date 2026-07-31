@@ -231,6 +231,8 @@ def run_doctor(
     ``native`` defaults to True (the PC/SC reader-and-card path that native signing uses),
     which is what the desktop app relies on; set it False to check the PKCS#11 middleware
     module at ``pkcs11_lib`` instead. ``reader`` selects a PC/SC reader for the native path.
+    ``native`` picks the mode: with True, ``pkcs11_lib`` is not used; with False, ``reader``
+    is not used.
     """
     from firmauy._shared import _collect_doctor_checks
     from firmauy.constants import DEFAULT_PKCS11_LIB
