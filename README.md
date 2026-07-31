@@ -225,6 +225,7 @@ is documented in **[docs/api.md](docs/api.md)**.
 - Review every document before signing it.
 - Use batch signing only in trusted workflows.
 - Keep your smart card, reader, PIN, and PKCS#11 middleware under your own control.
+- Found a vulnerability? Report it privately: see [SECURITY.md](SECURITY.md).
 
 ## Privacy
 
@@ -309,7 +310,10 @@ The full workflow, the project layout, and developing without the card (SoftHSM2
 
 Bug reports, questions, and pull requests are welcome.
 
-Feel free to open an issue on GitHub.
+Feel free to open an issue on GitHub. The contribution mechanics (including the required
+[DCO](https://developercertificate.org/) sign-off, `git commit -s`) are in
+**[CONTRIBUTING.md](CONTRIBUTING.md)**. For security problems, use the private channel described
+in **[SECURITY.md](SECURITY.md)** instead of a public issue.
 
 ### Cookbook contributions welcome
 
