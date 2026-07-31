@@ -165,15 +165,19 @@ def test_sign_message_validates_expected_length():
 # ── PIN safety ────────────────────────────────────────────────────────────────
 
 def test_verify_pin_blocked_aborts():
+    from firmauy.errors import PinLockedError
+
     conn = FakeConn(pin_status=(0x69, 0x83))
-    with pytest.raises(RuntimeError, match="blocked"):
+    with pytest.raises(PinLockedError, match="blocked"):  # a RuntimeError subclass, typed for the API
         verify_pin(conn, "1234")
     assert all(len(a) == 4 for a in conn.log)            # only the status probe; no VERIFY attempt
 
 
 def test_verify_pin_one_try_left_aborts():
+    from firmauy.errors import PinError
+
     conn = FakeConn(pin_status=(0x63, 0x01))
-    with pytest.raises(RuntimeError, match="try left"):
+    with pytest.raises(PinError, match="try left"):
         verify_pin(conn, "1234")
     assert conn.log == [[0x00, 0x20, 0x00, 0x11]]        # probed, then refused to spend the last try
 
@@ -192,9 +196,12 @@ def test_verify_pin_sends_padded_pin():
 
 
 def test_verify_pin_wrong_reports_tries():
+    from firmauy.errors import IncorrectPinError
+
     conn = FakeConn(pin_status=(0x63, 0x03), verify_sw=(0x63, 0x02))
-    with pytest.raises(RuntimeError, match="2 tries left"):
+    with pytest.raises(IncorrectPinError, match="2 tries left") as ei:
         verify_pin(conn, "1234")
+    assert ei.value.attempts_remaining == 2              # structured, so a GUI can show the count
 
 
 def test_verify_pin_unknown_probe_status_fails_closed():

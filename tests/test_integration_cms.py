@@ -287,3 +287,23 @@ def test_api_sign_file_with_pin_provider(softhsm_token, tmp_path, monkeypatch):
     assert isinstance(report, SignReport)
     assert report.output_path.exists()
     assert calls == [1]  # invoked exactly once, lazily
+
+
+def test_api_sign_file_wrong_pin_raises_incorrect_pin_error(softhsm_token, tmp_path, monkeypatch):
+    """A wrong PIN on the PKCS#11 path surfaces as IncorrectPinError through the public API.
+
+    Safe to exercise here: the SoftHSM token is a throwaway per-test store, so a failed login
+    burns nothing real. The middleware cannot report remaining attempts, so the field is None."""
+    from firmauy.api import IncorrectPinError, sign_file
+
+    module, env, cert = softhsm_token
+    monkeypatch.setenv("SOFTHSM2_CONF", env["SOFTHSM2_CONF"])
+
+    input_file = tmp_path / "payload-wrongpin.bin"
+    input_file.write_bytes(b"contents\n")
+
+    with pytest.raises(IncorrectPinError) as ei:
+        sign_file(input_file, "9999", native=False, pkcs11_lib=module, token_label=TOKEN_LABEL)
+    assert isinstance(ei.value, RuntimeError)     # broad pre-1.7.0 handlers still catch it
+    assert ei.value.attempts_remaining is None    # PKCS#11 cannot know
+    assert not input_file.with_name(input_file.name + ".p7s").exists()   # nothing was written

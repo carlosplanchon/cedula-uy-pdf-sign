@@ -11,6 +11,12 @@ from cryptography import x509
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from firmauy.cert_utils import cert_not_after, cert_not_before, get_common_name
+from firmauy.errors import (
+    CertificateNotFoundError,
+    CertificateNotValidError,
+    SigningKeyNotFoundError,
+    TokenNotFoundError,
+)
 
 
 def load_pkcs11_lib(pkcs11_lib: str) -> pkcs11.lib:
@@ -37,7 +43,7 @@ def find_token(lib: pkcs11.lib, token_label: Optional[str]) -> pkcs11.Token:
 
     tokens = list(lib.get_tokens())
     if not tokens:
-        raise RuntimeError("No PKCS#11 tokens available.")
+        raise TokenNotFoundError("No PKCS#11 tokens available.")
 
     if len(tokens) == 1:
         return tokens[0]
@@ -101,7 +107,7 @@ def get_private_key(session: pkcs11.Session, key_id: bytes) -> pkcs11.Object:
         pkcs11.Attribute.ID: key_id,
     }))
     if not keys:
-        raise RuntimeError(
+        raise SigningKeyNotFoundError(
             "No private key found on the token for the selected certificate."
         )
     return keys[0]
@@ -156,10 +162,10 @@ def select_certificate(
 
     if not cert_candidates and not unusable_candidates:
         if cert_id_hex:
-            raise RuntimeError(
+            raise CertificateNotFoundError(
                 f"No certificate found with ID {cert_id_hex} in the token."
             )
-        raise RuntimeError("No usable certificates found in the token.")
+        raise CertificateNotFoundError("No usable certificates found in the token.")
 
     if not cert_candidates:
         cert = unusable_candidates[0][1]
@@ -168,7 +174,7 @@ def select_certificate(
             reason = f"expired (valid until {cert_not_after(cert)})"
         else:
             reason = f"not yet valid (valid from {cert_not_before(cert)})"
-        raise RuntimeError(
+        raise CertificateNotValidError(
             f"Selected certificate is {reason}: {cn}\n"
             "No valid certificates found in the token."
         )
@@ -188,7 +194,7 @@ def select_certificate(
 
     if not valid_candidates:
         cn_list = ", ".join(get_common_name(c.subject) or "?" for _, c in no_key_candidates)
-        raise RuntimeError(
+        raise SigningKeyNotFoundError(
             "No valid certificate with available private key found. "
             f"Certificates without key: {cn_list}"
         )

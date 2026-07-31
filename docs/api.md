@@ -217,6 +217,38 @@ bundle = fetch_cas()
 print(bundle.root_path, bundle.intermediate_path)
 ```
 
+## Errors
+
+The domain conditions raise typed exceptions (importable from `firmauy.api` or `firmauy.errors`),
+so a GUI or script can branch on what happened instead of matching message text:
+
+```python
+from firmauy.api import sign, IncorrectPinError, PinLockedError, CardNotFoundError
+
+try:
+    report = sign("contract.pdf", pin_provider=ask_pin)
+except IncorrectPinError as exc:
+    retry(attempts=exc.attempts_remaining)   # None when the backend cannot know (PKCS#11)
+except PinLockedError:
+    show_unblock_help()
+except CardNotFoundError:
+    ask_to_insert_card()
+```
+
+The hierarchy, under a common `FirmauyError` base:
+
+- `ReaderNotFoundError`, `CardNotFoundError` — no reader / reader present but no card.
+- `PinError` — base for PIN problems, with `IncorrectPinError` (carries `attempts_remaining` on the
+  native path) and `PinLockedError`.
+- `CertificateError` — base, with `CertificateNotFoundError`, `CertificateNotValidError` (expired
+  or not yet valid) and `SigningKeyNotFoundError`; plus `TokenNotFoundError` for the PKCS#11 module.
+- `OutputExistsError` — the output file exists and `overwrite` was not passed (carries `path`).
+
+Every class also inherits the built-in the engine historically raised (`RuntimeError`, or
+`ValueError` where noted), so a broad `except RuntimeError` keeps working. Environment problems
+(pcscd down, PKCS#11 module missing) stay plain `RuntimeError` with actionable messages; use
+`run_doctor()` to diagnose those in a structured way.
+
 ## Notes
 
 - The signing functions take the PIN as `pin` (a string) or as `pin_provider` (a zero-arg callable

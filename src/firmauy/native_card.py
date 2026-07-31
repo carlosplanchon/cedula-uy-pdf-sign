@@ -33,6 +33,7 @@ from pyhanko_certvalidator.registry import SimpleCertificateStore
 
 from firmauy.card_reader import ber_length, check_sw, read_file, transmit_collect
 from firmauy.cert_utils import to_asn1_cert, to_asn1_certs
+from firmauy.errors import IncorrectPinError, PinError, PinLockedError
 from firmauy.national_ca import load_bundled_trust_anchors
 
 CERT_FID = 0xB001   # signing certificate EF (public, no PIN)
@@ -98,7 +99,7 @@ def verify_pin(conn, pin: str) -> None:
     lives in ``pin.get_pin`` and this only runs once we already have a candidate PIN."""
     status = _pin_status(conn)
     if status == "blocked":
-        raise RuntimeError("The PIN is blocked (too many incorrect attempts).")
+        raise PinLockedError("The PIN is blocked (too many incorrect attempts).")
     if status == "verified":
         return
     if not isinstance(status, int):
@@ -109,21 +110,22 @@ def verify_pin(conn, pin: str) -> None:
             "with an unknown retry counter. This card may not support native mode."
         )
     if status <= 1:
-        raise RuntimeError(
+        raise PinError(
             f"Only {status} PIN try left; aborting for safety. Unblock the cédula before retrying."
         )
     try:
         pin_bytes = pin.encode("ascii")
     except UnicodeEncodeError:
-        raise RuntimeError("PIN must be ASCII digits.")
+        raise PinError("PIN must be ASCII digits.")
     if not 4 <= len(pin_bytes) <= 8:
-        raise RuntimeError("PIN must be 4..8 digits.")
+        raise PinError("PIN must be 4..8 digits.")
     body = list(pin_bytes) + [0x00] * (12 - len(pin_bytes))   # zero-pad to the stored length of 12
     _, sw1, sw2 = conn.transmit([0x00, 0x20, 0x00, PIN_REF, 0x0C] + body)
     if sw1 == 0x63:
-        raise RuntimeError(f"Incorrect PIN, {sw2 & 0x0F} tries left.")
+        raise IncorrectPinError(f"Incorrect PIN, {sw2 & 0x0F} tries left.",
+                                attempts_remaining=sw2 & 0x0F)
     if (sw1, sw2) == (0x69, 0x83):
-        raise RuntimeError("The PIN is blocked (too many incorrect attempts).")
+        raise PinLockedError("The PIN is blocked (too many incorrect attempts).")
     check_sw(sw1, sw2, "VERIFY PIN")
 
 

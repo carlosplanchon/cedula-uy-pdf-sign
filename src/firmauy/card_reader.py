@@ -19,6 +19,7 @@ import hashlib
 from typing import Optional
 
 from firmauy.ci import validate_ci
+from firmauy.errors import CardNotFoundError, ReaderNotFoundError
 
 AIS_AID = [0xA0, 0x00, 0x00, 0x00, 0x18, 0x40, 0x00, 0x00, 0x01, 0x63, 0x42, 0x00]
 
@@ -332,14 +333,14 @@ def open_reader(reader_name: Optional[str] = None):
     """
     available = list_readers()
     if not available:
-        raise RuntimeError(
+        raise ReaderNotFoundError(
             "No PC/SC readers found. Is pcscd running and a reader connected?"
         )
     if reader_name is not None:
         matches = [r for r in available if str(r) == reader_name]
         if not matches:
             names = "\n".join(f"  {r}" for r in available)
-            raise RuntimeError(
+            raise ReaderNotFoundError(
                 f"Reader '{reader_name}' not found. Available readers:\n{names}"
             )
         reader = matches[0]
@@ -354,7 +355,7 @@ def open_reader(reader_name: Optional[str] = None):
     try:
         conn.connect()
     except Exception as exc:
-        raise RuntimeError(
+        raise CardNotFoundError(
             f"No card found in reader \"{reader}\". "
             "Insert the cédula and try again."
         ) from exc

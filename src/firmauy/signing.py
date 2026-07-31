@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 from zoneinfo import ZoneInfo
 import pkcs11
+import pkcs11.exceptions
 from cryptography import x509
 from pyhanko import stamp
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
@@ -41,6 +42,13 @@ from firmauy.cert_utils import (
     cert_not_before,
     get_common_name,
     normalize_issuer_name,
+)
+from firmauy.errors import (
+    CertificateNotValidError,
+    IncorrectPinError,
+    OutputExistsError,
+    PinError,
+    PinLockedError,
 )
 from firmauy.constants import (
     DEFAULT_IMAGE_OPACITY,
@@ -136,7 +144,7 @@ def _resolve_final_pin(pin, pin_provider) -> str:
         raise RuntimeError("no PIN was supplied: pass pin= or pin_provider=")
     final = pin if pin is not None else pin_provider()
     if not final:
-        raise RuntimeError(
+        raise PinError(
             "Empty PIN received; aborting before contacting the card "
             "(an empty PIN would still count toward its retry limit)."
         )
@@ -186,18 +194,27 @@ def _pkcs11_signing_session(*, pkcs11_lib, token_label, cert_id, pin=None, pin_p
     lib = load_pkcs11_lib(pkcs11_lib)
     token = find_token(lib, token_label)
     final_pin = _resolve_final_pin(pin, pin_provider)
-    with token.open(user_pin=final_pin) as session:
-        key_id, cert = select_certificate(session, cert_id, notify=notify)
-        signer_name, issuer_name, cert_serial = _cert_display_fields(cert)
-        yield _SigningContext(
-            cert=cert, signer_name=signer_name, issuer_name=issuer_name, cert_serial=cert_serial,
-            source_caption="Token",
-            source_display=(getattr(token, "label", "") or "").strip() or "<no label>",
-            key_id=key_id,
-            pyhanko_signer_factory=lambda: PKCS11Signer(
-                pkcs11_session=session, cert_id=key_id, key_id=key_id),
-            raw_signer_factory=lambda: _make_raw_signer(session, key_id),
-        )
+    # Translate the middleware's PIN exceptions into the domain ones (same messages the CLI's
+    # _format_error historically produced), so API consumers can catch IncorrectPinError /
+    # PinLockedError regardless of backend. The middleware does not report remaining attempts.
+    try:
+        with token.open(user_pin=final_pin) as session:
+            key_id, cert = select_certificate(session, cert_id, notify=notify)
+            signer_name, issuer_name, cert_serial = _cert_display_fields(cert)
+            yield _SigningContext(
+                cert=cert, signer_name=signer_name, issuer_name=issuer_name,
+                cert_serial=cert_serial,
+                source_caption="Token",
+                source_display=(getattr(token, "label", "") or "").strip() or "<no label>",
+                key_id=key_id,
+                pyhanko_signer_factory=lambda: PKCS11Signer(
+                    pkcs11_session=session, cert_id=key_id, key_id=key_id),
+                raw_signer_factory=lambda: _make_raw_signer(session, key_id),
+            )
+    except pkcs11.exceptions.PinIncorrect as exc:
+        raise IncorrectPinError("Incorrect PIN.") from exc
+    except pkcs11.exceptions.PinLocked as exc:
+        raise PinLockedError("The PIN is locked (too many incorrect attempts).") from exc
 
 
 @contextmanager
@@ -220,7 +237,7 @@ def _native_signing_session(*, reader, pin=None, pin_provider=None):
                 reason = f"expired (valid until {cert_not_after(cert)})"
             else:
                 reason = f"not yet valid (valid from {cert_not_before(cert)})"
-            raise RuntimeError(
+            raise CertificateNotValidError(
                 f"The card's signing certificate is {reason}: {get_common_name(cert.subject)}"
             )
         signer_name, issuer_name, cert_serial = _cert_display_fields(cert)
@@ -409,9 +426,10 @@ def _sign_one_pdf(
             "Choose a different output path (in batch mode, adjust --output-dir or --suffix)."
         )
     if output_pdf.exists() and not overwrite:
-        raise RuntimeError(
+        raise OutputExistsError(
             f"Output file already exists: {output_pdf}\n"
-            "Use --overwrite to overwrite it."
+            "Use --overwrite to overwrite it.",
+            path=output_pdf,
         )
 
     ensure_output_parent(output_pdf)
@@ -550,9 +568,10 @@ def _sign_one_xml(
             "Choose a different output path (in batch mode, adjust --output-dir or --suffix)."
         )
     if output_xml.exists() and not overwrite:
-        raise RuntimeError(
+        raise OutputExistsError(
             f"Output file already exists: {output_xml}\n"
-            "Use --overwrite to overwrite it."
+            "Use --overwrite to overwrite it.",
+            path=output_xml,
         )
     ensure_output_parent(output_xml)
     signed = sign_xml(
@@ -580,9 +599,10 @@ def _sign_one_cms(
             "Choose a different output path (in batch mode, adjust --output-dir or --suffix)."
         )
     if output_p7s.exists() and not overwrite:
-        raise RuntimeError(
+        raise OutputExistsError(
             f"Output file already exists: {output_p7s}\n"
-            "Use --overwrite to overwrite it."
+            "Use --overwrite to overwrite it.",
+            path=output_p7s,
         )
     ensure_output_parent(output_p7s)
     with input_file.open("rb") as f:

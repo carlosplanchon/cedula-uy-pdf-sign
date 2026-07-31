@@ -20,6 +20,24 @@ from firmauy.pdf_verify import verify_pdf
 from firmauy.verify_common import VerifyResult
 from firmauy.xml_verify import verify_xml
 
+# Domain exceptions, re-exported so API consumers can catch precise conditions from one place.
+# Each also inherits the built-in the engine historically raised (RuntimeError / ValueError),
+# so broad handlers keep working. See firmauy.errors for the hierarchy.
+from firmauy.errors import (
+    CardNotFoundError as CardNotFoundError,
+    CertificateError as CertificateError,
+    CertificateNotFoundError as CertificateNotFoundError,
+    CertificateNotValidError as CertificateNotValidError,
+    FirmauyError as FirmauyError,
+    IncorrectPinError as IncorrectPinError,
+    OutputExistsError as OutputExistsError,
+    PinError as PinError,
+    PinLockedError as PinLockedError,
+    ReaderNotFoundError as ReaderNotFoundError,
+    SigningKeyNotFoundError as SigningKeyNotFoundError,
+    TokenNotFoundError as TokenNotFoundError,
+)
+
 
 @dataclass(frozen=True)
 class VerifyReport:
@@ -241,7 +259,9 @@ def sign_file(
 
     This is the programmatic form of ``sign-any``: the original file is left untouched and a
     detached signature is written next to it (``<path>.p7s`` by default, or ``output``). Returns
-    a :class:`SignReport`; raises on any error (bad PIN, missing card, existing output, ...).
+    a :class:`SignReport`; raises on any error, with the domain conditions typed
+    (:class:`IncorrectPinError`, :class:`PinLockedError`, :class:`ReaderNotFoundError`,
+    :class:`CardNotFoundError`, :class:`OutputExistsError`, ...) so a caller can branch on them.
 
     Supply the card's User PIN as ``pin`` (a string, directly) or as ``pin_provider`` (a zero-arg
     callable invoked only when the PIN is actually needed, i.e. after the PIN-free certificate read,
