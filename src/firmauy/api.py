@@ -1,3 +1,6 @@
+# Copyright 2026 Carlos Andrés Planchón Prestes
+# Licensed under the Apache License, Version 2.0
+
 """Public library API for firmauy: sign, verify, read the cédula, introspect and diagnose.
 
 These are thin, integration-friendly wrappers over the same logic the CLI uses. They

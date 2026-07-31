@@ -1,3 +1,6 @@
+# Copyright 2026 Carlos Andrés Planchón Prestes
+# Licensed under the Apache License, Version 2.0
+
 """Backend-agnostic helpers shared by the CLI and the public API.
 
 These are pure-logic helpers (signature-format detection, trust-anchor resolution and the
