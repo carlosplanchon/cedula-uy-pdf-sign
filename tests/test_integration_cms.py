@@ -309,6 +309,5 @@ def test_api_sign_file_wrong_pin_raises_incorrect_pin_error(softhsm_token, tmp_p
 
     with pytest.raises(IncorrectPinError) as ei:
         sign_file(input_file, "9999", native=False, pkcs11_lib=module, token_label=TOKEN_LABEL)
-    assert isinstance(ei.value, RuntimeError)     # broad pre-1.7.0 handlers still catch it
     assert ei.value.attempts_remaining is None    # PKCS#11 cannot know
     assert not input_file.with_name(input_file.name + ".p7s").exists()   # nothing was written

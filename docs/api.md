@@ -1,13 +1,14 @@
 # Using firmauy as a library
 
-FirmaUY is primarily a command-line tool, but its core is also exposed as a public API,
-`firmauy.api`, so you can sign, verify, read the cédula, introspect and diagnose from your own Python
-program without shelling out to the CLI. Every function returns plain dataclasses, never printed text
-or process exit codes, so the results are easy to consume. This is the same API a GUI front-end can
-build on.
+FirmaUY is a signing engine exposed through two surfaces: a command-line interface and this public
+Python API. With `firmauy.api` you can sign, verify, read the cédula, introspect and diagnose from
+your own program, without shelling out to the CLI. Every function returns plain dataclasses and
+raises typed errors, never printed text or process exit codes, so the results are easy to consume.
+This is the same API the desktop app is built on.
 
-> **Status:** the public API is still young and may evolve. The CLI remains the primary, most stable
-> interface. As with the rest of FirmaUY, none of this is officially certified.
+> **Status:** the API is young and may still evolve (1.7.0 renamed `verify_file` to `verify`, for
+> instance), so pin the version you build on. The CLI's options are the older and more settled
+> contract. As with the rest of FirmaUY, none of this is officially certified.
 
 ## Install
 
@@ -240,7 +241,7 @@ except CardNotFoundError:
     ask_to_insert_card()
 ```
 
-The hierarchy, under a common `FirmauyError` base:
+The hierarchy, under a common `FirmaUYError` base:
 
 - `ReaderNotFoundError`, `CardNotFoundError` — no reader / reader present but no card.
 - `PinError` — base for PIN problems, with `IncorrectPinError` (carries `attempts_remaining` on the
@@ -249,10 +250,14 @@ The hierarchy, under a common `FirmauyError` base:
   or not yet valid) and `SigningKeyNotFoundError`; plus `TokenNotFoundError` for the PKCS#11 module.
 - `OutputExistsError` — the output file exists and `overwrite` was not passed (carries `path`).
 
-Every class also inherits the built-in the engine historically raised (`RuntimeError`, or
-`ValueError` where noted), so a broad `except RuntimeError` keeps working. Environment problems
-(pcscd down, PKCS#11 module missing) stay plain `RuntimeError` with actionable messages; use
-`run_doctor()` to diagnose those in a structured way.
+Catch `FirmaUYError` for the whole family. These classes deliberately do **not** inherit from the
+built-in error types: environment problems (pcscd down, PKCS#11 module missing) stay plain
+`RuntimeError` with actionable messages, and bad arguments stay `ValueError`, so catching an
+unexpected failure never silently catches an expected domain condition too. Use `run_doctor()` to
+diagnose the environment in a structured way.
+
+> **Changed in 1.8.0:** the domain errors no longer inherit `RuntimeError`. Catch `FirmaUYError`
+> or the specific classes instead of a broad `except RuntimeError`.
 
 ## Notes
 

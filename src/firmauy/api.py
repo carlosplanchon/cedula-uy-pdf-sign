@@ -20,15 +20,14 @@ from firmauy.pdf_verify import verify_pdf
 from firmauy.verify_common import VerifyResult
 from firmauy.xml_verify import verify_xml
 
-# Domain exceptions, re-exported so API consumers can catch precise conditions from one place.
-# Each also inherits the built-in the engine historically raised (RuntimeError / ValueError),
-# so broad handlers keep working. See firmauy.errors for the hierarchy.
+# Domain exceptions, re-exported so API consumers can catch precise conditions (or the whole
+# family through FirmaUYError) from one place. See firmauy.errors for the hierarchy.
 from firmauy.errors import (
     CardNotFoundError as CardNotFoundError,
     CertificateError as CertificateError,
     CertificateNotFoundError as CertificateNotFoundError,
     CertificateNotValidError as CertificateNotValidError,
-    FirmauyError as FirmauyError,
+    FirmaUYError as FirmaUYError,
     IncorrectPinError as IncorrectPinError,
     OutputExistsError as OutputExistsError,
     PinError as PinError,

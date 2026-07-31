@@ -82,7 +82,7 @@ The PIN is never placed in argv, results, logs or exception messages.
 
 ## Errors
 
-`firmauy.errors` defines a small hierarchy under `FirmauyError` for the conditions a caller can
+`firmauy.errors` defines a small hierarchy under `FirmaUYError` for the conditions a caller can
 meaningfully branch on: reader/card presence, PIN outcomes (`IncorrectPinError` carries
 `attempts_remaining` when the backend can know it), certificate problems and existing outputs.
 

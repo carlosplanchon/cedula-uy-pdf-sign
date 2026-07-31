@@ -3,9 +3,8 @@
 
 """Domain exceptions for firmauy.
 
-Every class also inherits the built-in type the engine historically raised (RuntimeError, and
-ValueError where noted), so existing ``except RuntimeError`` code and message-matching tests keep
-working, while API consumers (a GUI, a script) can catch precise conditions::
+They all derive from :class:`FirmaUYError`, so a caller can catch the whole family or a precise
+condition::
 
     from firmauy.api import sign, IncorrectPinError, PinLockedError
 
@@ -18,13 +17,15 @@ working, while API consumers (a GUI, a script) can catch precise conditions::
 
 The hierarchy is intentionally small: only conditions a caller can meaningfully branch on get a
 class. Environment problems (pcscd down, PKCS#11 module missing) stay plain ``RuntimeError`` with
-actionable messages, and ``run_doctor`` is the structured way to diagnose those.
+actionable messages, and ``run_doctor`` is the structured way to diagnose those. That split is the
+point of keeping ``FirmaUYError`` off the built-in error types: an expected domain condition and an
+unexpected failure should not be caught by the same ``except``.
 """
 
 from typing import Optional
 
 
-class FirmauyError(Exception):
+class FirmaUYError(Exception):
     """Base class for all firmauy domain errors."""
 
 
@@ -33,11 +34,11 @@ class FirmauyError(Exception):
 # ---------------------------------------------------------------------------
 
 
-class ReaderNotFoundError(FirmauyError, RuntimeError):
+class ReaderNotFoundError(FirmaUYError):
     """No PC/SC reader is available (none connected, or the named reader does not exist)."""
 
 
-class CardNotFoundError(FirmauyError, RuntimeError):
+class CardNotFoundError(FirmaUYError):
     """A reader is present but no card answered (not inserted, or not readable)."""
 
 
@@ -46,7 +47,7 @@ class CardNotFoundError(FirmauyError, RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-class PinError(FirmauyError, RuntimeError):
+class PinError(FirmaUYError):
     """Base class for PIN problems (bad format, empty, or the low-retries safety guard)."""
 
 
@@ -68,11 +69,11 @@ class PinLockedError(PinError):
 # ---------------------------------------------------------------------------
 
 
-class TokenNotFoundError(FirmauyError, RuntimeError):
+class TokenNotFoundError(FirmaUYError):
     """No PKCS#11 token is available to the module."""
 
 
-class CertificateError(FirmauyError, RuntimeError):
+class CertificateError(FirmaUYError):
     """Base class for signing-certificate problems on the card/token."""
 
 
@@ -93,7 +94,7 @@ class SigningKeyNotFoundError(CertificateError):
 # ---------------------------------------------------------------------------
 
 
-class OutputExistsError(FirmauyError, RuntimeError):
+class OutputExistsError(FirmaUYError):
     """The output file already exists and overwrite was not requested. ``path`` is the output."""
 
     def __init__(self, message: str, *, path=None):

@@ -1,8 +1,8 @@
 """Unit tests for the domain exception hierarchy (firmauy.errors).
 
-The contract under test: every domain error is catchable precisely (for a GUI) AND keeps
-inheriting the built-in the engine historically raised, so pre-1.7.0 handlers and the CLI's
-broad ``except Exception`` formatting keep working unchanged.
+The contract under test: every domain error is catchable precisely (for a GUI) and as a family
+through ``FirmaUYError``, and none of them is a built-in error type, so catching an unexpected
+failure never silently catches an expected domain condition too.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from firmauy.errors import (
     CertificateError,
     CertificateNotFoundError,
     CertificateNotValidError,
-    FirmauyError,
+    FirmaUYError,
     IncorrectPinError,
     OutputExistsError,
     PinError,
@@ -25,16 +25,18 @@ from firmauy.errors import (
 )
 
 
-def test_every_domain_error_is_a_firmauy_error_and_a_runtime_error():
+def test_every_domain_error_is_a_firmauy_error_and_not_a_builtin_one():
     for cls in (
         ReaderNotFoundError, CardNotFoundError, PinError, IncorrectPinError, PinLockedError,
         TokenNotFoundError, CertificateError, CertificateNotFoundError, CertificateNotValidError,
         SigningKeyNotFoundError, OutputExistsError,
     ):
-        exc = cls("boom") if cls is not IncorrectPinError else cls("boom")
-        assert isinstance(exc, FirmauyError)
-        assert isinstance(exc, RuntimeError)   # pre-1.7.0 compatibility: broad handlers still work
+        exc = cls("boom")
+        assert isinstance(exc, FirmaUYError)
         assert str(exc) == "boom"
+        # Domain conditions are expected outcomes, so they must not be catchable as the built-in
+        # types used for unexpected failures.
+        assert not isinstance(exc, (RuntimeError, ValueError, OSError))
 
 
 def test_pin_hierarchy():
