@@ -4,7 +4,7 @@
 
 **Your cédula is a signing key. FirmaUY brings it to the terminal.**
 
-Sign and verify PDF, XML and any file with your Uruguayan national ID card over PKCS#11. Open-standard signatures (PAdES, XAdES, CAdES) that verify in any compliant validator, with the whole trust chain checked locally against the Uruguayan national root. Your documents stay on your machine.
+Sign and verify PDF, XML and any file with your Uruguayan national ID card over PKCS#11. Open-standard signatures (PAdES, XAdES, CAdES) that verify in any compliant validator, with the whole trust chain checked locally against the Uruguayan national root. Your documents stay on your machine. Use it from the terminal, or from Python through its [public API](#use-as-a-library).
 
 [![CI](https://github.com/carlosplanchon/firmauy/actions/workflows/ci.yml/badge.svg)](https://github.com/carlosplanchon/firmauy/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/firmauy.svg)](https://pypi.org/project/firmauy/)
@@ -31,6 +31,9 @@ firmauy verify input_firmado.pdf       # verify (auto-detects format; offline ch
 FirmaUY provides a local, developer-oriented workflow for **signing and verifying** documents and files with a Uruguayan national ID card (cédula) using PKCS#11 middleware: PDF (PAdES), XML (XAdES) and detached CAdES/.p7s signatures for arbitrary files.
 
 Each format has a batch variant and optional RFC 3161 timestamping. Verification runs locally with certificate-chain validation to the Uruguayan national root, and needs no card. FirmaUY also reads the card's public data without a PIN (biographical data and photo), validates a cédula's check digit offline, and diagnoses the local setup.
+
+Everything the CLI does is also a public Python API with typed results and typed errors,
+`firmauy.api`, built on the same engine: see [Use as a library](#use-as-a-library).
 
 See [Commands](#commands) for the full list, with every command's options behind `firmauy <command> --help`.
 
@@ -142,7 +145,7 @@ Run `firmauy --help`, or `firmauy <command> --help` for the full options of any 
 examples for every command are in the **[usage guide](docs/usage.md)**, and task-oriented recipes
 (privacy, automation, `jq` pipelines) are in the **[cookbook](docs/cookbook.md)**.
 
-**Signing** (prompts for the PKCS#11 PIN, unless a [non-interactive source](docs/usage.md#non-interactive-pin) is given). Add [`--native`](docs/usage.md#native-signing-no-pkcs11-middleware) to any of these to sign over PC/SC without PKCS#11:
+**Signing** (prompts for the card's PIN, unless a [non-interactive source](docs/usage.md#non-interactive-pin) is given). Add [`--native`](docs/usage.md#native-signing-no-pkcs11-middleware) to any of these to sign over PC/SC without PKCS#11:
 
 | Command | Description |
 |---|---|
@@ -173,8 +176,33 @@ examples for every command are in the **[usage guide](docs/usage.md)**, and task
 
 | Command | Description |
 |---|---|
-| `doctor` | Diagnose the local environment (pcscd, PKCS#11 module, card, CAs) |
+| `doctor` | Diagnose the local environment (pcscd, PKCS#11 module, card, CAs). `--native` checks the PC/SC path native signing uses |
 | `fetch-cas` | Optional: refresh the bundled national CA certificates from the network |
+
+## Use as a library
+
+Everything the CLI does is also a public Python API, `firmauy.api`, built on the same engine. It
+returns frozen dataclasses and raises typed errors, never printed text or exit codes, so a GUI or
+a script can consume it directly:
+
+```python
+import getpass
+from firmauy.api import sign, verify
+
+report = sign("contract.pdf", pin_provider=lambda: getpass.getpass("PIN: "))
+print(report.kind, "->", report.output_path)   # pades -> contract_firmado.pdf
+
+print(verify(report.output_path).indication)   # VALID
+```
+
+The `pin_provider` callback runs only after the reader, card and certificate check out, so a broken
+setup never costs a PIN try. Domain conditions raise typed exceptions: a wrong PIN is
+`IncorrectPinError` (carrying `attempts_remaining` on the native path), a locked card is
+`PinLockedError`, an existing output is `OutputExistsError`, and so on.
+
+The full surface (every signature format, whole batches in one card session, reading the cédula's
+identity and photo, listing readers, tokens and certificates, diagnostics, check-digit validation)
+is documented in **[docs/api.md](docs/api.md)**.
 
 ## Documentation
 
@@ -183,13 +211,15 @@ examples for every command are in the **[usage guide](docs/usage.md)**, and task
 - **[Trust anchors](docs/trust-anchors.md)**: the bundled national CA certificates, how trust is pinned and refreshed, and the state of revocation.
 - **[Card protocol reference](docs/card-protocol.md)**: the cédula's data model and the APDU-level signing protocol behind `--native` (native, PKCS#11-free signing).
 - **[OpenSC backend](docs/opensc-backend.md)**: build OpenSC from source and sign through the fully open-source `opensc-pkcs11.so` module instead of the proprietary middleware.
-- **[Library API](docs/api.md)**: use firmauy from your own Python program (`firmauy.api`) to verify, sign and diagnose, instead of shelling out to the CLI.
+- **[Library API](docs/api.md)**: the full `firmauy.api` reference: signing every format (single and batch), verification, reading the cédula, listing readers, tokens and certificates, diagnostics, and the typed reports and errors.
 - **[Development](docs/development.md)**: running from source with `uv`, the test suite, and developing without the card (SoftHSM2).
 
 ## Security considerations
 
 - Never pass the PIN directly as a command-line argument.
 - Prefer interactive PIN entry for manual use.
+- From Python, prefer `pin_provider` over holding the PIN in a variable: it is requested only once
+  the reader, card and certificate check out.
 - For automation, prefer protected file descriptors or controlled environments.
 - Review every document before signing it.
 - Use batch signing only in trusted workflows.
