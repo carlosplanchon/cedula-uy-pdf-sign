@@ -22,6 +22,16 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+      # Catch the classic slip (tagging before committing the version bump) here, in seconds and
+      # with a clear message, instead of at the upload with PyPI's "File already exists".
+      - name: Tag must match the packaged version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag v$tag does not match pyproject.toml version $pkg. Commit the version bump, then re-tag that commit."
+            exit 1
+          fi
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
