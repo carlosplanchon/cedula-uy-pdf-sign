@@ -67,11 +67,25 @@ class DoctorReport:
 
 @dataclass(frozen=True)
 class SignReport:
-    """Result of a successful signature: where it was written and who signed."""
+    """Result of a successful signature: where it was written, who signed, and how.
+
+    ``kind`` is the signature that was produced: ``"pades"`` (embedded in the PDF), ``"xades"``
+    (embedded in the XML) or ``"cades"`` (a detached ``.p7s``); with :func:`sign`'s auto-detection
+    this is how the caller learns what came out. ``backend`` is ``"native"`` (PC/SC) or
+    ``"pkcs11"``; in the PKCS#11 case ``pkcs11_lib`` is the resolved module path that actually
+    signed (e.g. the bundled middleware vs OpenSC's ``opensc-pkcs11.so``), None in native mode.
+    ``verified`` is True when the fresh signature was re-checked (``verify=True``) and found
+    intact. The trailing fields default for backward compatibility.
+    """
 
     output_path: Path
     signer: str  # signer certificate common name
     issuer: str  # issuer certificate common name
+    kind: str = ""
+    backend: str = ""
+    certificate_serial: str = ""
+    verified: bool = False
+    pkcs11_lib: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -295,21 +309,24 @@ def sign_file(
         tsa_url=tsa_url, tsa_user=None, tsa_pass_env=None, tsa_header=None, tsa_header_env=None,
     )
 
+    lib_path = str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB
     with _signing_session(
         native=native, reader=str(reader) if reader is not None else None,
-        pkcs11_lib=str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB,
-        token_label=token_label, cert_id=cert_id,
+        pkcs11_lib=lib_path, token_label=token_label, cert_id=cert_id,
         pin=pin, pin_provider=pin_provider,
     ) as ctx:
         _sign_one_cms(
             input_file=path, output_p7s=out, pkcs11_signer=ctx.pyhanko_signer(),
             timestamper=timestamper, overwrite=overwrite,
         )
-        signer, issuer = ctx.signer_name, ctx.issuer_name
+        signer, issuer, serial = ctx.signer_name, ctx.issuer_name, ctx.cert_serial
 
     if verify:
         _verify_after_cms(path, out)
-    return SignReport(output_path=out, signer=signer, issuer=issuer)
+    return SignReport(output_path=out, signer=signer, issuer=issuer, kind="cades",
+                      backend="native" if native else "pkcs11",
+                      certificate_serial=serial, verified=verify,
+                      pkcs11_lib=None if native else lib_path)
 
 
 def sign_pdf(
@@ -371,10 +388,10 @@ def sign_pdf(
         tsa_url=tsa_url, tsa_user=None, tsa_pass_env=None, tsa_header=None, tsa_header_env=None,
     )
 
+    lib_path = str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB
     with _signing_session(
         native=native, reader=str(reader) if reader is not None else None,
-        pkcs11_lib=str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB,
-        token_label=token_label, cert_id=cert_id,
+        pkcs11_lib=lib_path, token_label=token_label, cert_id=cert_id,
         pin=pin, pin_provider=pin_provider,
     ) as ctx:
         meta = signers.PdfSignatureMetadata(
@@ -387,11 +404,14 @@ def sign_pdf(
             page=-1, x1=DEFAULT_X1, y1=DEFAULT_Y1, x2=DEFAULT_X2, y2=DEFAULT_Y2,
             timezone=DEFAULT_TIMEZONE, field_name="Sig1", force=False, overwrite=overwrite,
         )
-        signer, issuer = ctx.signer_name, ctx.issuer_name
+        signer, issuer, serial = ctx.signer_name, ctx.issuer_name, ctx.cert_serial
 
     if verify:
         _verify_after_pdf(out)
-    return SignReport(output_path=out, signer=signer, issuer=issuer)
+    return SignReport(output_path=out, signer=signer, issuer=issuer, kind="pades",
+                      backend="native" if native else "pkcs11",
+                      certificate_serial=serial, verified=verify,
+                      pkcs11_lib=None if native else lib_path)
 
 
 def sign_xml(
@@ -439,10 +459,10 @@ def sign_xml(
         tsa_url=tsa_url, tsa_user=None, tsa_pass_env=None, tsa_header=None, tsa_header_env=None,
     )
 
+    lib_path = str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB
     with _signing_session(
         native=native, reader=str(reader) if reader is not None else None,
-        pkcs11_lib=str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB,
-        token_label=token_label, cert_id=cert_id,
+        pkcs11_lib=lib_path, token_label=token_label, cert_id=cert_id,
         pin=pin, pin_provider=pin_provider,
     ) as ctx:
         _sign_one_xml(
@@ -450,11 +470,14 @@ def sign_xml(
             signing_time=datetime.now(ZoneInfo(DEFAULT_TIMEZONE)), overwrite=overwrite,
             timestamper=timestamper,
         )
-        signer, issuer = ctx.signer_name, ctx.issuer_name
+        signer, issuer, serial = ctx.signer_name, ctx.issuer_name, ctx.cert_serial
 
     if verify:
         _verify_after_xml(out)
-    return SignReport(output_path=out, signer=signer, issuer=issuer)
+    return SignReport(output_path=out, signer=signer, issuer=issuer, kind="xades",
+                      backend="native" if native else "pkcs11",
+                      certificate_serial=serial, verified=verify,
+                      pkcs11_lib=None if native else lib_path)
 
 
 def sign(
@@ -575,10 +598,10 @@ def sign_files(
     )
 
     reports: list[SignReport] = []
+    lib_path = str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB
     with _signing_session(
         native=native, reader=str(reader) if reader is not None else None,
-        pkcs11_lib=str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB,
-        token_label=token_label, cert_id=cert_id,
+        pkcs11_lib=lib_path, token_label=token_label, cert_id=cert_id,
         pin=pin, pin_provider=pin_provider,
     ) as ctx:
         for p in items:
@@ -614,7 +637,13 @@ def sign_files(
                 )
                 if verify:
                     _verify_after_cms(p, out)
-            reports.append(SignReport(output_path=out, signer=ctx.signer_name, issuer=ctx.issuer_name))
+            reports.append(SignReport(
+                output_path=out, signer=ctx.signer_name, issuer=ctx.issuer_name,
+                kind={"pdf": "pades", "xml": "xades", "any": "cades"}[kind],
+                backend="native" if native else "pkcs11",
+                certificate_serial=ctx.cert_serial, verified=verify,
+                pkcs11_lib=None if native else lib_path,
+            ))
     return reports
 
 

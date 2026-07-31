@@ -242,6 +242,11 @@ def test_api_sign_file_direct_pin_pkcs11(softhsm_token, tmp_path, monkeypatch):
     assert report.output_path.exists()
     assert report.signer == "PEREZ PEREZ JUAN"
     assert report.issuer  # issuer common name surfaced, non-empty
+    assert report.kind == "cades"
+    assert report.backend == "pkcs11"
+    assert report.pkcs11_lib == module                   # which module signed (middleware vs OpenSC)
+    assert report.certificate_serial == format(cert.serial_number, "X")
+    assert report.verified is True                       # verify=True re-checked the signature
 
     # Detached CMS SignedData, original left untouched.
     ci = asn1cms.ContentInfo.load(report.output_path.read_bytes())

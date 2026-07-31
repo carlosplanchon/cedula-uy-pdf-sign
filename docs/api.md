@@ -71,8 +71,13 @@ handle it with care.
 - `output` overrides the default `<input>.p7s` path. `tsa_url` adds an RFC 3161 timestamp.
 - `verify=True` re-checks the fresh signature for integrity before returning.
 
-Returns a `SignReport(output_path, signer, issuer)`. Raises on any error, such as an empty PIN, a
-missing input, an existing output, or a card or PIN failure.
+Returns a `SignReport(output_path, signer, issuer, kind, backend, certificate_serial, verified,
+pkcs11_lib)`: `kind` is the signature produced (`"pades"`, `"xades"` or `"cades"`, useful with
+`sign()`'s auto-detection), `backend` is `"native"` or `"pkcs11"`, `pkcs11_lib` is the resolved
+module path that signed in the PKCS#11 case (so you can tell the bundled middleware from OpenSC's
+`opensc-pkcs11.so`; None in native mode), and `verified` is True when `verify=True` re-checked the
+fresh signature. Raises on any error, such as an empty PIN, a missing input, an
+existing output, or a card or PIN failure.
 
 ## Sign a PDF
 

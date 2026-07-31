@@ -697,6 +697,9 @@ def test_api_sign_auto_signs_pdf_as_pades(softhsm, sample_pdf, tmp_path, monkeyp
     assert isinstance(report, SignReport)
     assert report.output_path == out
     assert report.signer == "PEREZ PEREZ JUAN"
+    assert report.kind == "pades"        # the caller learns what auto-detection produced
+    assert report.backend == "pkcs11"
+    assert report.verified is True
     from pyhanko.pdf_utils.reader import PdfFileReader
     with out.open("rb") as f:
         assert len(PdfFileReader(f).embedded_signatures) == 1
@@ -726,13 +729,16 @@ def test_api_sign_files_mixed_one_session(softhsm, sample_pdf, tmp_path, monkeyp
 
     assert len(reports) == 3
     assert all(isinstance(r, SignReport) for r in reports)
-    # Default output name/type per input kind.
+    # Default output name/type per input kind, and the per-file kind is reported.
     assert reports[0].output_path.suffix == ".pdf"
     assert reports[0].output_path.stem.endswith("_firmado")
     assert reports[1].output_path.name.endswith("_firmado.xml")
     assert reports[2].output_path.name.endswith(".bin.p7s")
+    assert [r.kind for r in reports] == ["pades", "xades", "cades"]
     for r in reports:
         assert r.output_path.exists()
+        assert r.backend == "pkcs11"
+        assert r.verified is False       # verify was not requested for the batch
 
 
 def test_api_list_tokens_and_certs(softhsm, tmp_path, monkeypatch):

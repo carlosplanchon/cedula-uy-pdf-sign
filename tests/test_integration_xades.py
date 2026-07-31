@@ -239,6 +239,9 @@ def test_api_sign_xml_direct_pin(softhsm_token, tmp_path, monkeypatch):
     assert report.output_path == output_xml
     assert output_xml.exists()
     assert report.signer == "PEREZ PEREZ JUAN"
+    assert report.kind == "xades"
+    assert report.backend == "pkcs11"
+    assert report.verified is True
 
     signed = output_xml.read_bytes()
     assert b"xmldsig-more#rsa-sha256" in signed
