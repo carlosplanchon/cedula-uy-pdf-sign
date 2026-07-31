@@ -74,10 +74,10 @@ MF 3F00
 └─ DF 5000  (PKCS#15 application "Gem P15")
    ├─ EF 5031         EF(TokenInfo)
    ├─ EF 5032         EF(ODF)
-   ├─ EF 5006         EF(AODF)  — "User PIN" (ref 0x11), "SO PIN"
-   ├─ EF 5001         EF(CDF)   — certificate directory
-   ├─ EF 5002         EF(PrKDF) — RSA private key, PIN-protected, key ref 0x01
-   ├─ EF 5003         EF(PuKDF) — public key
+   ├─ EF 5006         EF(AODF)  - "User PIN" (ref 0x11), "SO PIN"
+   ├─ EF 5001         EF(CDF)   - certificate directory
+   ├─ EF 5002         EF(PrKDF) - RSA private key, PIN-protected, key ref 0x01
+   ├─ EF 5003         EF(PuKDF) - public key
    └─ B001            X.509 signing cert (RSA-2048)
 ```
 

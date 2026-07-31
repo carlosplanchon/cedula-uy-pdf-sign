@@ -259,12 +259,12 @@ except CardNotFoundError:
 
 The hierarchy, under a common `FirmaUYError` base:
 
-- `ReaderNotFoundError`, `CardNotFoundError` — no reader / reader present but no card.
-- `PinError` — base for PIN problems, with `IncorrectPinError` (carries `attempts_remaining` on the
+- `ReaderNotFoundError`, `CardNotFoundError`: no reader / reader present but no card.
+- `PinError`: base for PIN problems, with `IncorrectPinError` (carries `attempts_remaining` on the
   native path) and `PinLockedError`.
-- `CertificateError` — base, with `CertificateNotFoundError`, `CertificateNotValidError` (expired
-  or not yet valid) and `SigningKeyNotFoundError`; plus `TokenNotFoundError` for the PKCS#11 module.
-- `OutputExistsError` — the output file exists and `overwrite` was not passed (carries `path`).
+- `CertificateError`: base, with `CertificateNotFoundError`, `CertificateNotValidError` (expired
+  or not yet valid) and `SigningKeyNotFoundError`, plus `TokenNotFoundError` for the PKCS#11 module.
+- `OutputExistsError`: the output file exists and `overwrite` was not passed (carries `path`).
 
 Catch `FirmaUYError` for the whole family. These classes deliberately do **not** inherit from the
 built-in error types: environment problems (pcscd down, PKCS#11 module missing) stay plain

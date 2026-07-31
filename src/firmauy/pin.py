@@ -24,7 +24,7 @@ def get_pin(source: PinSource, env_var: Optional[str], fd: Optional[int]) -> str
             fg=typer.colors.YELLOW,
             err=True,
         )
-        # The card's User PIN — the same PIN whichever backend (PKCS#11 or --native) asks for it.
+        # The card's User PIN, the same PIN whichever backend (PKCS#11 or --native) asks for it.
         pin = getpass.getpass("Cédula PIN: ")
     elif source == PinSource.env:
         if not env_var:
