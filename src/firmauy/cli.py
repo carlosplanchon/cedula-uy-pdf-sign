@@ -1688,7 +1688,7 @@ def verify_xml_cmd(
         if check_revocation and no_trust:
             raise RuntimeError("--check-revocation requires the certificate chain; remove --no-trust.")
 
-        roots, intermediates = _resolve_trust_anchors(ca_file, no_trust)
+        roots, intermediates = _resolve_trust_anchors(ca_file, no_trust, notify=_warn)
         tsa_roots, tsa_others = _resolve_tsa_anchors(tsa_ca)
 
         results = verify_xml(
@@ -1748,7 +1748,7 @@ def verify_pdf_cmd(
         if check_revocation and no_trust:
             raise RuntimeError("--check-revocation requires the certificate chain; remove --no-trust.")
 
-        roots, intermediates = _resolve_trust_anchors(ca_file, no_trust)
+        roots, intermediates = _resolve_trust_anchors(ca_file, no_trust, notify=_warn)
 
         results = verify_pdf(
             input_pdf,
@@ -1814,7 +1814,7 @@ def verify_any_cmd(
                 "Pass the .p7s path explicitly as the second argument."
             )
 
-        roots, intermediates = _resolve_trust_anchors(ca_file, no_trust)
+        roots, intermediates = _resolve_trust_anchors(ca_file, no_trust, notify=_warn)
 
         # Stream the (possibly large) signed file instead of loading it into memory; only the
         # small detached signature is read whole.
@@ -1911,7 +1911,7 @@ def verify_cmd(
                 fg=typer.colors.YELLOW, err=True,
             )
 
-        roots, intermediates = _resolve_trust_anchors(ca_file, no_trust)
+        roots, intermediates = _resolve_trust_anchors(ca_file, no_trust, notify=_warn)
 
         if kind == "pdf":
             results = verify_pdf(input_file, trust_roots=roots, intermediates=intermediates,

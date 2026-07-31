@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
-import typer
 from cryptography import x509
 
 from firmauy.national_ca import load_bundled_trust_anchors, load_cached_trust_anchors
@@ -43,10 +42,14 @@ _INDICATION_RANK = {"VALID": 0, "INDETERMINATE": 1, "INVALID": 2}
 _CMS_DETECT_MAX_BYTES = 8 * 1024 * 1024
 
 
-def _resolve_trust_anchors(ca_file: Optional[Path], no_trust: bool):
+def _resolve_trust_anchors(ca_file: Optional[Path], no_trust: bool,
+                           notify: Optional[Callable[[str], None]] = None):
     """Return (roots, intermediates): from --ca-file, else the cached national CAs, else the
     certificates bundled with the package, else (None, None) with a hint. Returns (None, None)
-    when trust is skipped."""
+    when trust is skipped.
+
+    ``notify``, when given, receives the fallback note when the bundled anchors cannot be loaded
+    (a broken-install edge); without it the note is dropped."""
     if no_trust:
         return None, None
     if ca_file is not None:
@@ -64,12 +67,11 @@ def _resolve_trust_anchors(ca_file: Optional[Path], no_trust: bool):
         return bundled_roots, bundled_intermediates
     # Reached only if the bundled trust anchors could not be loaded (e.g. a broken install),
     # since they are otherwise always present.
-    typer.secho(
-        "Note: the bundled trust anchors could not be loaded; checking signature integrity\n"
-        "      only. Pass --ca-file with the national CAs, or run 'firmauy fetch-cas'.",
-        fg=typer.colors.YELLOW,
-        err=True,
-    )
+    if notify:
+        notify(
+            "Note: the bundled trust anchors could not be loaded; checking signature integrity\n"
+            "      only. Pass --ca-file with the national CAs, or run 'firmauy fetch-cas'."
+        )
     return None, None
 
 

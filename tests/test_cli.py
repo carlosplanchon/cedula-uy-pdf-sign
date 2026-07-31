@@ -1113,7 +1113,8 @@ def _patch_signing(monkeypatch):
     monkeypatch.setattr(signing, "load_pkcs11_lib", lambda lib: object())
     monkeypatch.setattr(signing, "find_token", lambda lib, label: _FakeToken())
     monkeypatch.setattr(cli, "get_pin", lambda *a, **k: "1234")
-    monkeypatch.setattr(signing, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
+    monkeypatch.setattr(signing, "select_certificate",
+                        lambda session, cid, notify=None: (b"\x01", _FakeCert()))
     monkeypatch.setattr(signing, "get_common_name", lambda name: "SIGNER")
     monkeypatch.setattr(signing, "normalize_issuer_name", lambda s: "ISSUER")
     monkeypatch.setattr(signing, "PKCS11Signer", lambda **k: object())
@@ -1213,7 +1214,8 @@ def test_signing_session_yields_context_and_stays_silent(monkeypatch, capsys):
     # context and the CLI prints the identity block via _print_signing_info.
     monkeypatch.setattr(signing, "load_pkcs11_lib", lambda lib: object())
     monkeypatch.setattr(signing, "find_token", lambda lib, label: _FakeToken())
-    monkeypatch.setattr(signing, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
+    monkeypatch.setattr(signing, "select_certificate",
+                        lambda session, cid, notify=None: (b"\x01", _FakeCert()))
     monkeypatch.setattr(signing, "get_common_name", lambda name: "SIGNER")
     monkeypatch.setattr(signing, "normalize_issuer_name", lambda s: "ISSUER")
     monkeypatch.setattr(signing, "PKCS11Signer", lambda **kw: ("pk-signer", kw))
@@ -1249,7 +1251,8 @@ def test_signing_session_notes_backend_mismatched_options(monkeypatch):
     # so no command can forget it: --reader without --native is reported through notify, pre-PIN.
     monkeypatch.setattr(signing, "load_pkcs11_lib", lambda lib: object())
     monkeypatch.setattr(signing, "find_token", lambda lib, label: _FakeToken())
-    monkeypatch.setattr(signing, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
+    monkeypatch.setattr(signing, "select_certificate",
+                        lambda session, cid, notify=None: (b"\x01", _FakeCert()))
     monkeypatch.setattr(signing, "get_common_name", lambda name: "SIGNER")
     monkeypatch.setattr(signing, "normalize_issuer_name", lambda s: "ISSUER")
 

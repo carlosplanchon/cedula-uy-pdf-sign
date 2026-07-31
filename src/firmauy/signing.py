@@ -155,8 +155,9 @@ def _signing_session(*, native, reader, pkcs11_lib, token_label, cert_id, pin=No
 
     The PIN arrives as ``pin`` (direct) or ``pin_provider`` (a zero-arg callable invoked only after
     the PIN-free certificate read, preserving the card's retry-limit guard). ``notify``, when given,
-    receives the informational backend-option notes as plain lines (pre-flight, before any reader or
-    PIN access); without it they are dropped. The --cert-id/--native hard error is always raised."""
+    receives the informational lines as they occur (backend-option notes pre-flight, then the
+    certificate-selection warnings); without it they are dropped. The --cert-id/--native hard error
+    is always raised."""
     _check_backend_options(
         native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
         cert_id=cert_id, notify=notify,
@@ -167,15 +168,17 @@ def _signing_session(*, native, reader, pkcs11_lib, token_label, cert_id, pin=No
     else:
         with _pkcs11_signing_session(
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id, pin=pin,
-            pin_provider=pin_provider,
+            pin_provider=pin_provider, notify=notify,
         ) as ctx:
             yield ctx
 
 
 @contextmanager
-def _pkcs11_signing_session(*, pkcs11_lib, token_label, cert_id, pin=None, pin_provider=None):
+def _pkcs11_signing_session(*, pkcs11_lib, token_label, cert_id, pin=None, pin_provider=None,
+                            notify: Optional[Callable[[str], None]] = None):
     """PKCS#11 backend: load the module, open a PIN session, select the signing certificate and
-    yield the context (display fields included, nothing printed). The session is closed on exit."""
+    yield the context (display fields included, nothing printed). The session is closed on exit.
+    ``notify`` receives the certificate-selection warnings (skipped candidates)."""
     # Validate the hex cert ID up front: a malformed --cert-id must fail before the PIN is obtained
     # (an incorrect PIN counts toward the card's retry limit), not later inside select_certificate.
     if cert_id is not None:
@@ -184,7 +187,7 @@ def _pkcs11_signing_session(*, pkcs11_lib, token_label, cert_id, pin=None, pin_p
     token = find_token(lib, token_label)
     final_pin = _resolve_final_pin(pin, pin_provider)
     with token.open(user_pin=final_pin) as session:
-        key_id, cert = select_certificate(session, cert_id)
+        key_id, cert = select_certificate(session, cert_id, notify=notify)
         signer_name, issuer_name, cert_serial = _cert_display_fields(cert)
         yield _SigningContext(
             cert=cert, signer_name=signer_name, issuer_name=issuer_name, cert_serial=cert_serial,

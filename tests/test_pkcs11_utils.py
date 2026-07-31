@@ -1,7 +1,6 @@
 import datetime
 
 import pytest
-import typer
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -61,21 +60,21 @@ class TestNormalizeCertIdHex:
         assert normalize_cert_id_hex("0123456789") == "0123456789"
 
     def test_invalid_raises_bad_parameter(self):
-        with pytest.raises(typer.BadParameter):
+        with pytest.raises(ValueError):
             normalize_cert_id_hex("zz")
 
     def test_empty_raises_bad_parameter(self):
-        with pytest.raises(typer.BadParameter):
+        with pytest.raises(ValueError):
             normalize_cert_id_hex("")
 
     def test_odd_length_raises_bad_parameter(self):
         # Valid hex characters but an odd count: a byte ID is always even-length. This used to slip
         # through and blow up later in bytes.fromhex with a cryptic ValueError.
-        with pytest.raises(typer.BadParameter, match="odd number"):
+        with pytest.raises(ValueError, match="odd number"):
             normalize_cert_id_hex("abc")
 
     def test_odd_length_with_separators_raises(self):
-        with pytest.raises(typer.BadParameter, match="odd number"):
+        with pytest.raises(ValueError, match="odd number"):
             normalize_cert_id_hex("ab:c")
 
 

@@ -4,10 +4,9 @@
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 import pkcs11
-import typer
 from cryptography import x509
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
@@ -68,11 +67,11 @@ def normalize_cert_id_hex(cert_id_hex: str) -> str:
     cryptic ``ValueError``."""
     normalized = cert_id_hex.replace(":", "").replace(" ", "").upper()
     if not re.fullmatch(r"[0-9A-F]+", normalized):
-        raise typer.BadParameter(
+        raise ValueError(
             f"--cert-id '{cert_id_hex}' is not a valid hexadecimal value."
         )
     if len(normalized) % 2 != 0:
-        raise typer.BadParameter(
+        raise ValueError(
             f"--cert-id '{cert_id_hex}' has an odd number of hex digits; "
             "a byte ID is an even-length hex string."
         )
@@ -122,7 +121,8 @@ def has_private_key(session: pkcs11.Session, key_id: bytes) -> bool:
 
 
 def select_certificate(
-    session: pkcs11.Session, cert_id_hex: Optional[str]
+    session: pkcs11.Session, cert_id_hex: Optional[str],
+    notify: Optional[Callable[[str], None]] = None,
 ) -> tuple[bytes, x509.Certificate]:
     """Select the best signing certificate from the token.
 
@@ -130,6 +130,9 @@ def select_certificate(
     Otherwise, scores all available certificates and returns the one most
     likely to be a cédula identity certificate. Expired certificates are
     excluded; if all candidates are expired an error is raised.
+
+    ``notify``, when given, receives the skipped-candidate warning lines (certificates without a
+    private key, expired ones); without it they are dropped.
     """
     wanted_id = bytes.fromhex(normalize_cert_id_hex(cert_id_hex)) if cert_id_hex else None
     cert_candidates: list[tuple[bytes, x509.Certificate]] = []
@@ -178,11 +181,9 @@ def select_certificate(
         else:
             no_key_candidates.append((key_id, cert))
 
-    if no_key_candidates:
-        typer.secho(
-            f"Warning: {len(no_key_candidates)} certificate(s) skipped, no matching private key in token.",
-            fg=typer.colors.YELLOW,
-            err=True,
+    if no_key_candidates and notify:
+        notify(
+            f"Warning: {len(no_key_candidates)} certificate(s) skipped, no matching private key in token."
         )
 
     if not valid_candidates:
@@ -194,11 +195,9 @@ def select_certificate(
 
     cert_candidates = valid_candidates
 
-    if unusable_candidates:
-        typer.secho(
-            f"Warning: {len(unusable_candidates)} certificate(s) skipped (expired or not yet valid).",
-            fg=typer.colors.YELLOW,
-            err=True,
+    if unusable_candidates and notify:
+        notify(
+            f"Warning: {len(unusable_candidates)} certificate(s) skipped (expired or not yet valid)."
         )
 
     def score(item: tuple[bytes, x509.Certificate]) -> int:
