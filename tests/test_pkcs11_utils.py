@@ -126,3 +126,19 @@ class TestTokenToDict:
         assert token_to_dict(SimpleNamespace()) == {
             "label": None, "manufacturer": None, "model": None, "serial": None,
         }
+
+    def test_a_bytes_attribute_is_decoded_not_left_as_bytes(self):
+        """Real finding against a Gemalto middleware: it returns the serial as the raw PKCS#11
+        attribute, so the annotated str was really bytes and a caller formatting it printed the
+        Python repr, b'66000034D0201077'. NUL padding is the attribute format, not the value."""
+        from types import SimpleNamespace
+
+        tok = SimpleNamespace(label=b"GemP15-1\x00\x00", manufacturer=b"  ",
+                              model="Classic V4", serial=b"66000034D0201077")
+
+        assert token_to_dict(tok) == {
+            "label": "GemP15-1",
+            "manufacturer": None,      # padding only, so it reads as absent
+            "model": "Classic V4",
+            "serial": "66000034D0201077",
+        }

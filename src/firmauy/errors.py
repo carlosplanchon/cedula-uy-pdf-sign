@@ -100,3 +100,55 @@ class OutputExistsError(FirmaUYError):
     def __init__(self, message: str, *, path=None):
         super().__init__(message)
         self.path = path
+
+
+# ---------------------------------------------------------------------------
+# Inputs
+# ---------------------------------------------------------------------------
+
+
+class DetachedOriginalRequiredError(FirmaUYError):
+    """A detached ``.p7s`` was given with no original file to check it against.
+
+    The default follows the ``<x>.p7s -> <x>`` convention; this is raised when that sibling is
+    missing and no ``original`` was passed. ``p7s_path`` is the signature and ``expected`` is
+    where the original was looked for, so a caller can name the file it needs.
+
+    A recoverable situation rather than a programming error: the two files routinely travel
+    separately by email, and the fix is to ask which file the signature covers.
+
+    .. versionadded:: 1.10.0
+       Previously a bare ``ValueError``, which left callers matching on the message text.
+    """
+
+    def __init__(self, message: str, *, p7s_path=None, expected=None):
+        super().__init__(message)
+        self.p7s_path = p7s_path
+        self.expected = expected
+
+
+# ---------------------------------------------------------------------------
+# Batches
+# ---------------------------------------------------------------------------
+
+
+class BatchSignError(FirmaUYError):
+    """A batch stopped at one file, carrying what had already been signed.
+
+    ``completed`` holds one :class:`~firmauy.api.SignReport` per file written before the failure,
+    ``failed_index`` is the position of the file that broke (0-based, into the input sequence)
+    and ``failed_path`` is that file. The underlying failure is chained as ``__cause__``.
+
+    The signatures already written stay on disk on purpose: they are real and valid. Being able
+    to tell the user "2 of 7 were signed and they are fine" instead of only "it failed" is the
+    reason this class exists.
+
+    .. versionadded:: 1.10.0
+    """
+
+    def __init__(self, message: str, *, completed=None, failed_index: int = -1,
+                 failed_path=None):
+        super().__init__(message)
+        self.completed = list(completed or [])
+        self.failed_index = failed_index
+        self.failed_path = failed_path

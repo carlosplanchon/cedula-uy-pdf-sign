@@ -26,10 +26,12 @@ from firmauy.xml_verify import verify_xml
 # Domain exceptions, re-exported so API consumers can catch precise conditions (or the whole
 # family through FirmaUYError) from one place. See firmauy.errors for the hierarchy.
 from firmauy.errors import (
+    BatchSignError as BatchSignError,
     CardNotFoundError as CardNotFoundError,
     CertificateError as CertificateError,
     CertificateNotFoundError as CertificateNotFoundError,
     CertificateNotValidError as CertificateNotValidError,
+    DetachedOriginalRequiredError as DetachedOriginalRequiredError,
     FirmaUYError as FirmaUYError,
     IncorrectPinError as IncorrectPinError,
     OutputExistsError as OutputExistsError,
@@ -214,7 +216,10 @@ def verify(
     else:  # cms / detached .p7s
         orig = Path(original) if original else _detached_original(path)
         if orig is None or not orig.exists():
-            raise ValueError("detached .p7s needs its original file (pass original=...)")
+            raise DetachedOriginalRequiredError(
+                "detached .p7s needs its original file (pass original=...)",
+                p7s_path=path, expected=orig,
+            )
         with orig.open("rb") as data:
             results = [verify_cms(data, path.read_bytes(), trust_roots=roots,
                                   intermediates=intermediates, check_revocation=check_revocation)]
@@ -559,14 +564,28 @@ def sign_files(
     tsa_url: Optional[str] = None,
     overwrite: bool = False,
     verify: bool = False,
+    progress: Optional[Callable[[int, Path, Path], None]] = None,
 ) -> list[SignReport]:
     """Sign several files in a single signing session (one card session, one PIN check for all).
 
     Each file's type is resolved like :func:`sign`. Signing every file through one
     ``_signing_session`` avoids the N PIN verifications that calling :func:`sign` in a loop would
     cause. ``output_dir`` writes the results there (flat, default name per type) instead of next to
-    each input. Fail-fast: raises on the first file that fails. Returns a list of
-    :class:`SignReport`, one per input, in order.
+    each input. Returns a list of :class:`SignReport`, one per input, in order.
+
+    ``progress`` is called after each output is written, with ``(index, input_path,
+    output_path)``, where ``index`` is 0-based into ``paths``. It runs on the calling thread,
+    inside the card session, so it should return quickly and must not touch the card.
+
+    Fail-fast, but not silently: the first file that fails raises :class:`BatchSignError`, whose
+    ``completed`` holds the reports for everything already written and whose ``failed_index`` and
+    ``failed_path`` say where it stopped. Those outputs stay on disk because they are real,
+    valid signatures, and a caller that can say "2 of 7 were signed and they are fine" is worth
+    much more than one that can only say it failed.
+
+    .. versionchanged:: 1.10.0
+       Added ``progress``, and a partial batch now raises :class:`BatchSignError` instead of
+       letting the underlying error through with the completed work lost.
     """
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -575,6 +594,7 @@ def sign_files(
 
     from firmauy.signing import (
         _build_timestamper,
+        _output_path_for,
         _resolve_sign_kind,
         _sign_one_cms,
         _sign_one_pdf,
@@ -618,39 +638,47 @@ def sign_files(
         pkcs11_lib=lib_path, token_label=token_label, cert_id=cert_id,
         pin=pin, pin_provider=pin_provider,
     ) as ctx:
-        for p in items:
-            kind = _resolve_sign_kind(p, sa)
-            if kind == "pdf":
-                out = (out_dir / p.name if out_dir else p).with_stem(p.stem + "_firmado")
-                meta = signers.PdfSignatureMetadata(
-                    field_name="Sig1", reason=reason, location=location, md_algorithm=None,
-                )
-                _sign_one_pdf(
-                    input_pdf=p, output_pdf=out, pkcs11_signer=ctx.pyhanko_signer(),
-                    signer_name=ctx.signer_name, issuer_name=ctx.issuer_name,
-                    cert_serial=ctx.cert_serial, timestamper=timestamper, meta=meta,
-                    page=-1, x1=DEFAULT_X1, y1=DEFAULT_Y1, x2=DEFAULT_X2, y2=DEFAULT_Y2,
-                    timezone=DEFAULT_TIMEZONE, field_name="Sig1", force=False, overwrite=overwrite,
-                )
-                if verify:
-                    _verify_after_pdf(out)
-            elif kind == "xml":
-                out = (out_dir / p.name if out_dir else p).with_stem(p.stem + "_firmado")
-                _sign_one_xml(
-                    input_xml=p, output_xml=out, cert=ctx.cert, signer=ctx.raw_signer(),
-                    signing_time=datetime.now(ZoneInfo(DEFAULT_TIMEZONE)), overwrite=overwrite,
-                    timestamper=timestamper,
-                )
-                if verify:
-                    _verify_after_xml(out)
-            else:
-                out = (out_dir / (p.name + ".p7s")) if out_dir else p.with_name(p.name + ".p7s")
-                _sign_one_cms(
-                    input_file=p, output_p7s=out, pkcs11_signer=ctx.pyhanko_signer(),
-                    timestamper=timestamper, overwrite=overwrite,
-                )
-                if verify:
-                    _verify_after_cms(p, out)
+        for index, p in enumerate(items):
+            try:
+                kind = _resolve_sign_kind(p, sa)
+                out = _output_path_for(p, kind, out_dir)
+                if kind == "pdf":
+                    meta = signers.PdfSignatureMetadata(
+                        field_name="Sig1", reason=reason, location=location, md_algorithm=None,
+                    )
+                    _sign_one_pdf(
+                        input_pdf=p, output_pdf=out, pkcs11_signer=ctx.pyhanko_signer(),
+                        signer_name=ctx.signer_name, issuer_name=ctx.issuer_name,
+                        cert_serial=ctx.cert_serial, timestamper=timestamper, meta=meta,
+                        page=-1, x1=DEFAULT_X1, y1=DEFAULT_Y1, x2=DEFAULT_X2, y2=DEFAULT_Y2,
+                        timezone=DEFAULT_TIMEZONE, field_name="Sig1", force=False,
+                        overwrite=overwrite,
+                    )
+                    if verify:
+                        _verify_after_pdf(out)
+                elif kind == "xml":
+                    _sign_one_xml(
+                        input_xml=p, output_xml=out, cert=ctx.cert, signer=ctx.raw_signer(),
+                        signing_time=datetime.now(ZoneInfo(DEFAULT_TIMEZONE)),
+                        overwrite=overwrite, timestamper=timestamper,
+                    )
+                    if verify:
+                        _verify_after_xml(out)
+                else:
+                    _sign_one_cms(
+                        input_file=p, output_p7s=out, pkcs11_signer=ctx.pyhanko_signer(),
+                        timestamper=timestamper, overwrite=overwrite,
+                    )
+                    if verify:
+                        _verify_after_cms(p, out)
+            except Exception as exc:
+                # Everything already written is a real signature. Hand it over rather than let it
+                # vanish with the exception: the caller needs it to say what actually happened.
+                raise BatchSignError(
+                    f"batch stopped at {p} (file {index + 1} of {len(items)}): {exc}",
+                    completed=reports, failed_index=index, failed_path=p,
+                ) from exc
+
             reports.append(SignReport(
                 output_path=out, signer=ctx.signer_name, issuer=ctx.issuer_name,
                 kind={"pdf": "pades", "xml": "xades", "any": "cades"}[kind],
@@ -658,7 +686,36 @@ def sign_files(
                 certificate_serial=ctx.cert_serial, verified=verify,
                 pkcs11_lib=None if native else lib_path,
             ))
+            if progress is not None:
+                progress(index, p, out)
     return reports
+
+
+def output_path_for(
+    path: Union[str, Path],
+    *,
+    sign_as: str = "auto",
+    output_dir: Optional[Union[str, Path]] = None,
+) -> Path:
+    """Where :func:`sign` and :func:`sign_files` would write the signature for ``path``.
+
+    An embedded signature (PDF, XML) keeps the input's extension and gets ``_firmado`` on the
+    stem; a detached one appends ``.p7s`` to the whole name, so ``data.bin`` becomes
+    ``data.bin.p7s``. With ``output_dir`` the result goes there, flat.
+
+    This exists so a caller can warn about an existing output *before* asking for the PIN,
+    without reimplementing a rule that would then drift from where the file actually lands. With
+    the default ``sign_as="auto"`` the file is read to detect its type, so it must exist; pass an
+    explicit type to ask about a file that is not there yet.
+
+    .. versionadded:: 1.10.0
+    """
+    from firmauy.constants import SignAs
+    from firmauy.signing import _output_path_for, _resolve_sign_kind
+
+    p = Path(path)
+    kind = _resolve_sign_kind(p, SignAs(sign_as))
+    return _output_path_for(p, kind, Path(output_dir) if output_dir is not None else None)
 
 
 # ---------------------------------------------------------------------------

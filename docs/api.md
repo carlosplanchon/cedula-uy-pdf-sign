@@ -142,7 +142,62 @@ for r in reports:
 ```
 
 Each file's type is resolved like `sign()`. `output_dir` writes the results there instead of next to
-each input. Fail-fast: it raises on the first file that fails. Returns a list of `SignReport`.
+each input. Returns a list of `SignReport`.
+
+`progress` is called after each output is written, with `(index, input_path, output_path)`, so a
+progress bar can be honest about what is already on disk:
+
+```python
+sign_files(paths, pin, progress=lambda i, src, out: print(f"{i + 1}/{len(paths)}: {out.name}"))
+```
+
+It runs on the calling thread, inside the card session, so it should return quickly and must not
+touch the card.
+
+Fail-fast, but not silently. The first file that fails raises a `BatchSignError` carrying what was
+already done:
+
+```python
+from firmauy.api import BatchSignError, sign_files
+
+try:
+    reports = sign_files(paths, pin)
+except BatchSignError as exc:
+    print(f"Signed {len(exc.completed)} of {len(paths)}, stopped at {exc.failed_path}")
+    print(f"Reason: {exc.__cause__}")
+    # exc.completed are real, valid signatures, and they are still on disk.
+```
+
+Those outputs are deliberately not rolled back: they are real signatures, and being able to say
+"2 of 7 were signed and they are fine" is worth a great deal more to the person waiting than
+"it failed".
+
+> **Changed in 1.10.0:** `progress` is new, and a partial batch now raises `BatchSignError`
+> instead of letting the underlying error through with the completed work lost.
+
+## Ask where the signature will be written
+
+`output_path_for()` answers what `sign()` and `sign_files()` would name the output, without
+signing anything. It needs no card and no PIN.
+
+```python
+from firmauy.api import output_path_for
+
+output_path_for("contrato.pdf")                      # contrato_firmado.pdf
+output_path_for("datos.bin")                         # datos.bin.p7s
+output_path_for("contrato.pdf", sign_as="cades")     # contrato.pdf.p7s
+output_path_for("a.bin", output_dir="firmados/")     # firmados/a.bin.p7s
+```
+
+An embedded signature (PDF, XML) keeps the input's extension and gets `_firmado` on the stem; a
+detached one appends `.p7s` to the whole name, so the original name stays readable.
+
+This is for warning about an existing output **before** asking for the PIN, in a GUI or a batch
+script, rather than reimplementing the naming rule and having the copy drift. With the default
+`sign_as="auto"` the file is read to detect its type, so it must exist; pass an explicit type to
+ask about a file that is not there yet.
+
+> **New in 1.10.0.**
 
 ## Diagnose the environment
 
@@ -265,6 +320,13 @@ The hierarchy, under a common `FirmaUYError` base:
 - `CertificateError`: base, with `CertificateNotFoundError`, `CertificateNotValidError` (expired
   or not yet valid) and `SigningKeyNotFoundError`, plus `TokenNotFoundError` for the PKCS#11 module.
 - `OutputExistsError`: the output file exists and `overwrite` was not passed (carries `path`).
+- `DetachedOriginalRequiredError`: a detached `.p7s` was given to `verify()` with no original to
+  check it against, and the `<x>.p7s -> <x>` sibling is missing. Carries `p7s_path` and `expected`,
+  so a GUI can name the file it wants. The two files routinely travel separately by email, so this
+  is a recoverable situation, not a programming error.
+- `BatchSignError`: `sign_files()` stopped at one file. Carries `completed` (the reports for
+  everything already written, still on disk), `failed_index`, `failed_path`, and the real failure
+  as `__cause__`.
 
 Catch `FirmaUYError` for the whole family. These classes deliberately do **not** inherit from the
 built-in error types: environment problems (pcscd down, PKCS#11 module missing) stay plain
@@ -275,6 +337,10 @@ diagnose the environment in a structured way.
 > **Changed in 1.8.0:** the domain errors no longer inherit `RuntimeError`. Catch `FirmaUYError`
 > or the specific classes instead of a broad `except RuntimeError`.
 
+> **Changed in 1.10.0:** a detached `.p7s` with no original now raises `DetachedOriginalRequiredError`
+> instead of a bare `ValueError`. It does **not** inherit `ValueError`, so an `except ValueError`
+> that used to catch it no longer does. Catch the new class, or `FirmaUYError`.
+
 ## Notes
 
 - The signing functions take the PIN as `pin` (a string) or as `pin_provider` (a zero-arg callable
@@ -282,7 +348,8 @@ diagnose the environment in a structured way.
   can prompt on demand). Exactly one of the two. For a terminal prompt, `getpass.getpass` keeps it
   off the screen.
 - Every result is a dataclass: `VerifyReport`, `SignReport`, `DoctorReport`/`DoctorCheck`,
-  `IdentityReport`, `PhotoReport`, `TokenInfo`, `CertInfo`, `CiReport`, `CaBundle`.
+  `IdentityReport`, `PhotoReport`, `TokenInfo`, `CertInfo`, `CiReport`, `CaBundle`. The exception
+  is `output_path_for()`, which returns a plain `Path`.
 - They do blocking I/O against the card and filesystem, so run them off the UI thread in a GUI.
 - Verifying and the pure utilities (`validate_ci`, `complete_ci`) need no card, so they are safe to
   call anywhere, including in tests.

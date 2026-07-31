@@ -111,3 +111,63 @@ def test_every_collected_check_carries_the_sensitive_flag(monkeypatch):
     assert checks, "expected at least the version and pcscd checks"
     assert all("sensitive" in c for c in checks)
     assert sum(c["sensitive"] for c in checks) == 1     # only the token label
+
+
+# --- output_path_for (no card, no HSM) --------------------------------------
+
+def test_output_path_for_matches_each_signer_default(tmp_path):
+    """The point of the helper is that a caller can warn about an existing output before asking
+    for the PIN. If it drifted from where the file actually lands it would be worse than useless.
+    """
+    from firmauy.api import output_path_for
+
+    pdf = tmp_path / "contrato.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+    xml = tmp_path / "factura.xml"
+    xml.write_bytes(b'<?xml version="1.0"?><F/>')
+    blob = tmp_path / "datos.bin"
+    blob.write_bytes(b"cualquier cosa")
+
+    # Auto-detection, by content: embedded signatures keep the extension, detached ones append.
+    assert output_path_for(pdf) == tmp_path / "contrato_firmado.pdf"
+    assert output_path_for(xml) == tmp_path / "factura_firmado.xml"
+    assert output_path_for(blob) == tmp_path / "datos.bin.p7s"
+
+
+def test_output_path_for_honours_a_forced_type(tmp_path):
+    pdf = tmp_path / "contrato.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n")
+
+    from firmauy.api import output_path_for
+
+    # Signing a PDF as a detached .p7s leaves the original bytes untouched, which some
+    # counterparties ask for.
+    assert output_path_for(pdf, sign_as="cades") == tmp_path / "contrato.pdf.p7s"
+    assert output_path_for(pdf, sign_as="pdf") == tmp_path / "contrato_firmado.pdf"
+
+
+def test_output_path_for_places_a_batch_flat_in_the_output_dir(tmp_path):
+    from firmauy.api import output_path_for
+
+    src = tmp_path / "sub"
+    src.mkdir()
+    blob = src / "datos.bin"
+    blob.write_bytes(b"x")
+    out = tmp_path / "firmados"
+
+    assert output_path_for(blob, output_dir=out) == out / "datos.bin.p7s"
+
+
+def test_output_path_for_can_answer_about_a_file_that_is_not_there(tmp_path):
+    """With an explicit type nothing is read, so a caller can ask before the file exists."""
+    from firmauy.api import output_path_for
+
+    assert output_path_for(tmp_path / "todavia_no.xml",
+                           sign_as="xml") == tmp_path / "todavia_no_firmado.xml"
+
+
+def test_output_path_for_rejects_an_unknown_type(tmp_path):
+    from firmauy.api import output_path_for
+
+    with pytest.raises(ValueError):
+        output_path_for(tmp_path / "x.pdf", sign_as="pkcs7")

@@ -657,3 +657,19 @@ def _resolve_sign_kind(path: Path, sign_as: SignAs) -> str:
     if sign_as is SignAs.auto:
         return _detect_input_kind(path)
     return {SignAs.pdf: "pdf", SignAs.xml: "xml", SignAs.cades: "any"}[sign_as]
+
+
+def _output_path_for(path: Path, kind: str, out_dir: Optional[Path] = None) -> Path:
+    """Default output path for signing ``path`` as ``kind`` ("pdf" | "xml" | "any").
+
+    An embedded signature keeps the input's extension and gets ``_firmado`` on the stem; a
+    detached one appends ``.p7s`` to the whole name, so ``data.bin`` becomes ``data.bin.p7s``
+    and the original name stays readable. With ``out_dir`` the result goes there, flat.
+
+    One definition for the signers, the batch and the public :func:`firmauy.api.output_path_for`,
+    so a caller checking for an existing output before asking for the PIN cannot drift from where
+    the file actually lands."""
+    if kind in ("pdf", "xml"):
+        base = (out_dir / path.name) if out_dir else path
+        return base.with_stem(path.stem + "_firmado")
+    return (out_dir / (path.name + ".p7s")) if out_dir else path.with_name(path.name + ".p7s")

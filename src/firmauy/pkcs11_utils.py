@@ -249,7 +249,14 @@ def token_to_dict(token) -> dict:
     ``<no label>`` / ``-`` are a CLI concern, not part of the data). Shared by the ``list-tokens``
     command and :func:`firmauy.api.list_tokens`."""
     def _attr(name: str) -> Optional[str]:
-        val = (getattr(token, name, "") or "").strip()
+        val = getattr(token, name, "")
+        if isinstance(val, (bytes, bytearray)):
+            # Some modules hand back the raw PKCS#11 attribute instead of a decoded string: the
+            # Gemalto middleware does it for the serial. Without this, a value annotated as str
+            # really is bytes, and a caller that formats it prints the Python repr,
+            # b'66000034D0201077'. NUL padding is part of the attribute format, not the value.
+            val = val.decode("utf-8", "replace").replace("\x00", "")
+        val = (val or "").strip()
         return val or None
 
     return {

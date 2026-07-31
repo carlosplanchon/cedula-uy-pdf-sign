@@ -801,3 +801,74 @@ def test_api_sign_files_pin_provider_called_once(softhsm, sample_pdf, tmp_path, 
 
     assert len(reports) == 3
     assert calls == [1]  # one PIN check for the whole batch, not one per file
+
+
+def test_api_sign_files_reports_progress_per_file(softhsm, sample_pdf, tmp_path, monkeypatch):
+    """progress fires once per output, after it is written, so a GUI can fill a bar honestly."""
+    from firmauy.api import sign_files
+
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+    monkeypatch.setenv("SOFTHSM2_CONF", softhsm.env["SOFTHSM2_CONF"])
+
+    a = tmp_path / "a.bin"
+    a.write_bytes(b"uno")
+    b = tmp_path / "b.bin"
+    b.write_bytes(b"dos")
+
+    steps = []
+    reports = sign_files(
+        [a, b], PIN, native=False, pkcs11_lib=softhsm.module, token_label="test-cedula",
+        progress=lambda i, src, out: steps.append((i, src, out, out.exists())),
+    )
+
+    assert [(i, src) for i, src, _out, _exists in steps] == [(0, a), (1, b)]
+    assert [out for _i, _src, out, _e in steps] == [r.output_path for r in reports]
+    assert all(exists for *_rest, exists in steps)      # the file is there when we are told
+
+
+def test_api_sign_files_keeps_the_partial_work_when_one_file_fails(
+    softhsm, sample_pdf, tmp_path, monkeypatch,
+):
+    """Fail-fast, but not silently. The signatures already written are real and valid, and the
+    caller needs them to say "2 of 3 were signed" instead of only "it failed"."""
+    from firmauy.api import BatchSignError, sign_files
+
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+    monkeypatch.setenv("SOFTHSM2_CONF", softhsm.env["SOFTHSM2_CONF"])
+
+    a = tmp_path / "a.bin"
+    a.write_bytes(b"uno")
+    b = tmp_path / "b.bin"
+    b.write_bytes(b"dos")
+    c = tmp_path / "c.bin"
+    c.write_bytes(b"tres")
+    # The third output already exists, so it fails with OutputExistsError mid-batch.
+    (tmp_path / "c.bin.p7s").write_bytes(b"viejo")
+
+    steps = []
+    with pytest.raises(BatchSignError) as ei:
+        sign_files([a, b, c], PIN, native=False, pkcs11_lib=softhsm.module,
+                   token_label="test-cedula", progress=lambda i, s, o: steps.append(i))
+
+    exc = ei.value
+    assert exc.failed_index == 2
+    assert exc.failed_path == c
+    assert len(exc.completed) == 2                       # a and b were signed
+    assert [r.output_path for r in exc.completed] == [
+        tmp_path / "a.bin.p7s", tmp_path / "b.bin.p7s",
+    ]
+    assert all(r.output_path.exists() for r in exc.completed)   # left on disk on purpose
+    assert steps == [0, 1]                               # progress never fired for the failure
+
+    from firmauy.api import OutputExistsError
+    assert isinstance(exc.__cause__, OutputExistsError)  # the real reason is still reachable
