@@ -4,10 +4,9 @@ These are thin, integration-friendly wrappers over the same logic the CLI uses. 
 return the dataclasses from ``verify_common`` (and small report objects), never printed
 output or process exit codes, so a GUI or another program can consume them directly.
 
-The verify and diagnostic helpers live in ``firmauy._shared`` (imported by both this module
-and the CLI). The signing machinery is still imported from ``firmauy.cli`` because it is
-coupled with the CLI's terminal output. Extracting it is a separate planned cleanup and does
-not change these signatures.
+The engine lives in domain modules shared with the CLI: the signing machinery in
+``firmauy.signing`` (presentation-free), the verify and diagnostic helpers in
+``firmauy._shared``. Nothing here imports the Typer command module.
 """
 
 from __future__ import annotations
@@ -262,7 +261,6 @@ def sign_file(
         _verify_after_cms,
     )
     from firmauy.constants import DEFAULT_PKCS11_LIB
-    from firmauy.pin import PinSource
 
     pin, pin_provider = _resolve_pin_args(pin, pin_provider)
 
@@ -281,9 +279,7 @@ def sign_file(
         native=native, reader=str(reader) if reader is not None else None,
         pkcs11_lib=str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB,
         token_label=token_label, cert_id=cert_id,
-        # pin_source is inert here: the direct ``pin`` below is used, so no prompt/read happens.
-        pin_source=PinSource.prompt, pin_env_var=None, pin_fd=None,
-        tsa_url=tsa_url, quiet=True, pin=pin, pin_provider=pin_provider, emit_notes=False,
+        pin=pin, pin_provider=pin_provider,
     ) as ctx:
         _sign_one_cms(
             input_file=path, output_p7s=out, pkcs11_signer=ctx.pyhanko_signer(),
@@ -341,7 +337,6 @@ def sign_pdf(
         DEFAULT_Y1,
         DEFAULT_Y2,
     )
-    from firmauy.pin import PinSource
 
     pin, pin_provider = _resolve_pin_args(pin, pin_provider)
 
@@ -360,8 +355,7 @@ def sign_pdf(
         native=native, reader=str(reader) if reader is not None else None,
         pkcs11_lib=str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB,
         token_label=token_label, cert_id=cert_id,
-        pin_source=PinSource.prompt, pin_env_var=None, pin_fd=None,
-        tsa_url=tsa_url, quiet=True, pin=pin, pin_provider=pin_provider, emit_notes=False,
+        pin=pin, pin_provider=pin_provider,
     ) as ctx:
         meta = signers.PdfSignatureMetadata(
             field_name="Sig1", reason=reason, location=location, md_algorithm=None,
@@ -411,7 +405,6 @@ def sign_xml(
         _verify_after_xml,
     )
     from firmauy.constants import DEFAULT_PKCS11_LIB, DEFAULT_TIMEZONE
-    from firmauy.pin import PinSource
 
     pin, pin_provider = _resolve_pin_args(pin, pin_provider)
 
@@ -430,8 +423,7 @@ def sign_xml(
         native=native, reader=str(reader) if reader is not None else None,
         pkcs11_lib=str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB,
         token_label=token_label, cert_id=cert_id,
-        pin_source=PinSource.prompt, pin_env_var=None, pin_fd=None,
-        tsa_url=tsa_url, quiet=True, pin=pin, pin_provider=pin_provider, emit_notes=False,
+        pin=pin, pin_provider=pin_provider,
     ) as ctx:
         _sign_one_xml(
             input_xml=path, output_xml=out, cert=ctx.cert, signer=ctx.raw_signer(),
@@ -544,7 +536,6 @@ def sign_files(
         DEFAULT_Y2,
         SignAs,
     )
-    from firmauy.pin import PinSource
 
     pin, pin_provider = _resolve_pin_args(pin, pin_provider)
 
@@ -568,8 +559,7 @@ def sign_files(
         native=native, reader=str(reader) if reader is not None else None,
         pkcs11_lib=str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB,
         token_label=token_label, cert_id=cert_id,
-        pin_source=PinSource.prompt, pin_env_var=None, pin_fd=None,
-        tsa_url=tsa_url, quiet=True, pin=pin, pin_provider=pin_provider, emit_notes=False,
+        pin=pin, pin_provider=pin_provider,
     ) as ctx:
         for p in items:
             kind = _resolve_sign_kind(p, sa)

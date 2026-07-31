@@ -278,7 +278,7 @@ def test_cli_native_routes_to_native_backend(monkeypatch, tmp_path):
     monkeypatch.setattr(native_card, "read_signing_certificate", lambda c: cert)
     monkeypatch.setattr(native_card, "verify_pin", lambda c, pin: recorded.setdefault("pin", pin))
     monkeypatch.setattr(native_card, "make_native_signer", lambda c, ct: object())
-    monkeypatch.setattr(signing, "get_pin", lambda *a, **k: "1234")
+    monkeypatch.setattr(cli, "get_pin", lambda *a, **k: "1234")
     # Record that the CMS worker got the native signer, without doing real CMS signing.
     monkeypatch.setattr(cli, "_sign_one_cms", lambda **k: recorded.setdefault("signed", True))
     # Any PKCS#11 access is a bug in native mode.
@@ -304,7 +304,7 @@ def test_cli_native_rejects_expired_certificate(monkeypatch, tmp_path):
     # certificate aborts the native session BEFORE the PIN is ever requested.
     import datetime
     from typer.testing import CliRunner
-    from firmauy import signing
+    from firmauy import cli, signing
     from firmauy.cli import app
 
     conn = FakeConn()
@@ -316,7 +316,7 @@ def test_cli_native_rejects_expired_certificate(monkeypatch, tmp_path):
 
     def _no_pin(*a, **k):
         raise AssertionError("the PIN must not be requested for an expired certificate")
-    monkeypatch.setattr(signing, "get_pin", _no_pin)
+    monkeypatch.setattr(cli, "get_pin", _no_pin)
 
     src = tmp_path / "data.bin"
     src.write_bytes(b"payload")
@@ -331,13 +331,13 @@ def test_cli_native_rejects_cert_id(monkeypatch, tmp_path):
     # --cert-id pins the signing identity by PKCS#11 object ID, which native mode cannot honor:
     # combining them is a hard error BEFORE any reader or PIN access, not an ignorable warning.
     from typer.testing import CliRunner
-    from firmauy import signing
+    from firmauy import cli, signing
     from firmauy.cli import app
 
     def _boom(*a, **k):
         raise AssertionError("neither the reader nor the PIN may be touched when --cert-id is rejected")
     monkeypatch.setattr(signing, "open_reader", _boom)
-    monkeypatch.setattr(signing, "get_pin", _boom)
+    monkeypatch.setattr(cli, "get_pin", _boom)
 
     src = tmp_path / "data.bin"
     src.write_bytes(b"payload")

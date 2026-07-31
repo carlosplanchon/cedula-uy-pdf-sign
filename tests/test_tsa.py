@@ -1,10 +1,13 @@
-"""Unit tests for TSA timestamper construction with auth (cli._build_timestamper)."""
+"""Unit tests for TSA timestamper construction with auth (signing._build_timestamper).
+
+The builder is presentation-free: inconsistent options raise ValueError, and the
+argv-visibility warning for sensitive literal headers goes to the optional ``notify``
+callback (which the CLI wires to stderr)."""
 
 import pytest
-import typer
 from pyhanko.sign.timestamps import HTTPTimeStamper
 
-from firmauy.cli import _build_timestamper
+from firmauy.signing import _build_timestamper
 
 
 def _b(**kw):
@@ -21,9 +24,9 @@ def test_none_without_url():
 
 
 def test_auth_options_require_url():
-    with pytest.raises(typer.BadParameter, match="require --tsa-url"):
+    with pytest.raises(ValueError, match="require --tsa-url"):
         _b(tsa_user="u")
-    with pytest.raises(typer.BadParameter, match="require --tsa-url"):
+    with pytest.raises(ValueError, match="require --tsa-url"):
         _b(tsa_header=["X: y"])
 
 
@@ -40,13 +43,13 @@ def test_basic_auth(monkeypatch):
 
 
 def test_user_without_passenv_raises():
-    with pytest.raises(typer.BadParameter, match="both --tsa-user and --tsa-pass-env"):
+    with pytest.raises(ValueError, match="both --tsa-user and --tsa-pass-env"):
         _b(tsa_url="https://t", tsa_user="alice")
 
 
 def test_passenv_unset_raises(monkeypatch):
     monkeypatch.delenv("ABSENT_TSA_PW", raising=False)
-    with pytest.raises(typer.BadParameter, match="is not set"):
+    with pytest.raises(ValueError, match="is not set"):
         _b(tsa_url="https://t", tsa_user="alice", tsa_pass_env="ABSENT_TSA_PW")
 
 
@@ -56,7 +59,7 @@ def test_headers_parsed():
 
 
 def test_bad_header_raises():
-    with pytest.raises(typer.BadParameter, match="Name: Value"):
+    with pytest.raises(ValueError, match="Name: Value"):
         _b(tsa_url="https://t", tsa_header=["no-colon"])
 
 
@@ -69,18 +72,18 @@ def test_header_env_reads_value_from_environment(monkeypatch):
 
 
 def test_header_env_requires_url():
-    with pytest.raises(typer.BadParameter, match="require --tsa-url"):
+    with pytest.raises(ValueError, match="require --tsa-url"):
         _b(tsa_header_env=["Authorization: TSA_AUTH"])
 
 
 def test_header_env_bad_format_raises():
-    with pytest.raises(typer.BadParameter, match="Name: ENV_VAR"):
+    with pytest.raises(ValueError, match="Name: ENV_VAR"):
         _b(tsa_url="https://t", tsa_header_env=["no-colon"])
 
 
 def test_header_env_missing_var_raises(monkeypatch):
     monkeypatch.delenv("ABSENT_HDR", raising=False)
-    with pytest.raises(typer.BadParameter, match="is not set"):
+    with pytest.raises(ValueError, match="is not set"):
         _b(tsa_url="https://t", tsa_header_env=["Authorization: ABSENT_HDR"])
 
 
@@ -91,12 +94,21 @@ def test_literal_and_env_headers_merge(monkeypatch):
     assert ts.headers == {"X-Trace-Id": "t1", "Authorization": "Bearer s3cret"}
 
 
-def test_sensitive_literal_header_warns(capsys):
-    # A credential passed literally is visible in argv: warn and point at --tsa-header-env.
-    _b(tsa_url="https://t", tsa_header=["Authorization: Bearer abc"])
-    assert "visible in the process list" in capsys.readouterr().err
+def test_sensitive_literal_header_warns():
+    # A credential passed literally is visible in argv: warn (via notify) and point at
+    # --tsa-header-env.
+    notes = []
+    _b(tsa_url="https://t", tsa_header=["Authorization: Bearer abc"], notify=notes.append)
+    assert any("visible in the process list" in n for n in notes)
 
 
-def test_nonsensitive_literal_header_is_silent(capsys):
-    _b(tsa_url="https://t", tsa_header=["X-Trace-Id: abc"])
-    assert capsys.readouterr().err == ""
+def test_nonsensitive_literal_header_is_silent():
+    notes = []
+    _b(tsa_url="https://t", tsa_header=["X-Trace-Id: abc"], notify=notes.append)
+    assert notes == []
+
+
+def test_warning_dropped_without_notify():
+    # The public API passes no notify: a sensitive literal header still builds, silently.
+    ts = _b(tsa_url="https://t", tsa_header=["Authorization: Bearer abc"])
+    assert ts.headers == {"Authorization": "Bearer abc"}

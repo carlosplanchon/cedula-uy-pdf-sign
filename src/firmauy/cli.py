@@ -169,6 +169,32 @@ AllowHybridXrefOpt = Annotated[bool, typer.Option("--allow-hybrid-xref", help="S
 # ---------------------------------------------------------------------------
 
 
+def _warn(msg: str) -> None:
+    """Print a warning/note line to stderr. This is the ``notify`` sink the signing engine calls,
+    so its warnings surface on the terminal; the public API passes no sink and stays silent."""
+    typer.secho(msg, fg=typer.colors.YELLOW, err=True)
+
+
+def _print_signing_info(ctx, *, tsa_url: Optional[str], quiet: bool = False) -> None:
+    """Print the aligned signer/token identity block shared by every sign-* command, from the
+    display fields the signing session collected (the session itself prints nothing).
+
+    ``ctx.source_caption`` labels the first line: "Token" for the PKCS#11 backend, "Reader" for the
+    native PC/SC backend; ``ctx.key_id`` is None in native mode, omitting that line. Skipped
+    entirely when ``quiet`` is set, to keep identifying data (signer name, certificate serial,
+    PKCS#11 ID) out of automation/CI logs."""
+    if quiet:
+        return
+    typer.echo(f"{ctx.source_caption + ':':<21}{ctx.source_display}")
+    typer.echo(f"Signer:              {ctx.signer_name}")
+    typer.echo(f"Issuer:              {ctx.issuer_name}")
+    if ctx.key_id is not None:
+        typer.echo(f"PKCS#11 ID:          {ctx.key_id.hex()}")
+    typer.echo(f"Certificate serial:  {ctx.cert_serial}")
+    if tsa_url:
+        typer.echo(f"TSA:                 {tsa_url}")
+
+
 def _warn_image_opacity_unused(image, image_mode, image_opacity) -> None:
     """--image-opacity only affects background mode; warn (once) if it was set for another mode."""
     if image and image_mode != ImageMode.background and image_opacity != DEFAULT_IMAGE_OPACITY:
@@ -420,6 +446,7 @@ def sign_pdf(
         _validate_image(image)
         _validate_timezone(timezone)
         timestamper = _build_timestamper(
+            notify=_warn,
             tsa_url=tsa_url,
             tsa_user=tsa_user,
             tsa_pass_env=tsa_pass_env,
@@ -461,9 +488,10 @@ def sign_pdf(
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
-            pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
-            tsa_url=tsa_url, quiet=quiet,
+            pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
+            notify=_warn,
         ) as ctx:
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
 
             meta = signers.PdfSignatureMetadata(
                 field_name=field_name,
@@ -494,7 +522,7 @@ def sign_pdf(
                 image_path=image,
                 image_mode=image_mode,
                 image_opacity=image_opacity,
-                allow_hybrid_xref=allow_hybrid_xref,
+                allow_hybrid_xref=allow_hybrid_xref, notify=_warn,
             )
 
         if verify:
@@ -563,6 +591,7 @@ def sign_pdf_batch(
         _validate_image(image)
         _validate_timezone(timezone)
         timestamper = _build_timestamper(
+            notify=_warn,
             tsa_url=tsa_url,
             tsa_user=tsa_user,
             tsa_pass_env=tsa_pass_env,
@@ -624,9 +653,10 @@ def sign_pdf_batch(
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
-            pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
-            tsa_url=tsa_url, quiet=quiet,
+            pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
+            notify=_warn,
         ) as ctx:
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
             typer.echo(f"Files to sign:       {len(jobs)}")
             typer.echo("")
 
@@ -666,7 +696,7 @@ def sign_pdf_batch(
                         image_path=image,
                         image_mode=image_mode,
                         image_opacity=image_opacity,
-                        allow_hybrid_xref=allow_hybrid_xref,
+                        allow_hybrid_xref=allow_hybrid_xref, notify=_warn,
                     )
                     if verify:
                         _verify_after_pdf(output_pdf)
@@ -749,6 +779,7 @@ def sign_xml_cmd(
         _validate_timezone(timezone)
 
         timestamper = _build_timestamper(
+            notify=_warn,
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env, tsa_header=tsa_header,
             tsa_header_env=tsa_header_env,
         )
@@ -756,9 +787,10 @@ def sign_xml_cmd(
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
-            pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
-            tsa_url=tsa_url, quiet=quiet,
+            pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
+            notify=_warn,
         ) as ctx:
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
 
             _sign_one_xml(
                 input_xml=input_xml,
@@ -820,6 +852,7 @@ def sign_xml_batch(
     try:
         _validate_timezone(timezone)
         timestamper = _build_timestamper(
+            notify=_warn,
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env, tsa_header=tsa_header,
             tsa_header_env=tsa_header_env,
         )
@@ -858,9 +891,10 @@ def sign_xml_batch(
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
-            pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
-            tsa_url=tsa_url, quiet=quiet,
+            pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
+            notify=_warn,
         ) as ctx:
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
             typer.echo(f"Files to sign:       {len(jobs)}")
             typer.echo("")
 
@@ -932,6 +966,7 @@ def sign_any(
         output_p7s = input_file.with_name(input_file.name + ".p7s")
     try:
         timestamper = _build_timestamper(
+            notify=_warn,
             tsa_url=tsa_url,
             tsa_user=tsa_user,
             tsa_pass_env=tsa_pass_env,
@@ -956,9 +991,10 @@ def sign_any(
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
-            pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
-            tsa_url=tsa_url, quiet=quiet,
+            pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
+            notify=_warn,
         ) as ctx:
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
 
             _sign_one_cms(
                 input_file=input_file,
@@ -1023,6 +1059,7 @@ def sign_any_batch(
     subfolders (with --recursive) do not collide."""
     try:
         timestamper = _build_timestamper(
+            notify=_warn,
             tsa_url=tsa_url,
             tsa_user=tsa_user,
             tsa_pass_env=tsa_pass_env,
@@ -1064,9 +1101,10 @@ def sign_any_batch(
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
-            pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
-            tsa_url=tsa_url, quiet=quiet,
+            pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
+            notify=_warn,
         ) as ctx:
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
             typer.echo(f"Files to sign:       {len(jobs)}")
             typer.echo("")
 
@@ -1213,6 +1251,7 @@ def sign_cmd(
             _validate_timezone(timezone)
 
         timestamper = _build_timestamper(
+            notify=_warn,
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header, tsa_header_env=tsa_header_env,
         )
@@ -1220,9 +1259,10 @@ def sign_cmd(
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
-            pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
-            tsa_url=tsa_url, quiet=quiet,
+            pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
+            notify=_warn,
         ) as ctx:
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
 
             if kind == "pdf":
                 meta = signers.PdfSignatureMetadata(
@@ -1236,7 +1276,7 @@ def sign_cmd(
                     timestamper=timestamper, meta=meta, page=page, x1=x1, y1=y1, x2=x2, y2=y2,
                     timezone=timezone, field_name=field_name, force=force, overwrite=overwrite,
                     image_path=image, image_mode=image_mode, image_opacity=image_opacity,
-                    allow_hybrid_xref=allow_hybrid_xref,
+                    allow_hybrid_xref=allow_hybrid_xref, notify=_warn,
                 )
             elif kind == "xml":
                 _sign_one_xml(
@@ -1335,6 +1375,7 @@ def sign_batch(
         if x2 <= x1 or y2 <= y1:
             raise typer.BadParameter("Coordinates must satisfy x1 < x2 and y1 < y2.")
         timestamper = _build_timestamper(
+            notify=_warn,
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header, tsa_header_env=tsa_header_env,
         )
@@ -1387,9 +1428,10 @@ def sign_batch(
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
-            pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
-            tsa_url=tsa_url, quiet=quiet,
+            pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
+            notify=_warn,
         ) as ctx:
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
             typer.echo(f"Files to sign:       {len(items)}")
             typer.echo("")
 
@@ -1414,7 +1456,7 @@ def sign_batch(
                             timestamper=timestamper, meta=meta, page=page, x1=x1, y1=y1, x2=x2, y2=y2,
                             timezone=timezone, field_name=field_name, force=force, overwrite=overwrite,
                             image_path=image, image_mode=image_mode, image_opacity=image_opacity,
-                            allow_hybrid_xref=allow_hybrid_xref,
+                            allow_hybrid_xref=allow_hybrid_xref, notify=_warn,
                         )
                         if verify:
                             _verify_after_pdf(output)

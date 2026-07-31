@@ -1112,7 +1112,7 @@ def _patch_signing(monkeypatch):
     calls = []
     monkeypatch.setattr(signing, "load_pkcs11_lib", lambda lib: object())
     monkeypatch.setattr(signing, "find_token", lambda lib, label: _FakeToken())
-    monkeypatch.setattr(signing, "get_pin", lambda *a, **k: "1234")
+    monkeypatch.setattr(cli, "get_pin", lambda *a, **k: "1234")
     monkeypatch.setattr(signing, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
     monkeypatch.setattr(signing, "get_common_name", lambda name: "SIGNER")
     monkeypatch.setattr(signing, "normalize_issuer_name", lambda s: "ISSUER")
@@ -1206,57 +1206,63 @@ def test_sign_batch_no_false_collision_for_distinct_outputs(monkeypatch, tmp_pat
     assert "Signed: 2/2" in r.output
 
 
-def test_signing_session_yields_context_and_respects_quiet(monkeypatch, capsys):
-    # The shared PKCS#11 bootstrap of every sign-* command: open the session, select the cert, print
-    # the identity block (unless --quiet), and yield a backend-agnostic context whose lazy factories
-    # build the pyHanko / raw signers the command bodies consume.
+def test_signing_session_yields_context_and_stays_silent(monkeypatch, capsys):
+    # The shared PKCS#11 bootstrap of every sign-* command: open the session, select the cert, and
+    # yield a backend-agnostic context whose lazy factories build the pyHanko / raw signers the
+    # command bodies consume. The session itself prints nothing: the display fields travel on the
+    # context and the CLI prints the identity block via _print_signing_info.
     monkeypatch.setattr(signing, "load_pkcs11_lib", lambda lib: object())
     monkeypatch.setattr(signing, "find_token", lambda lib, label: _FakeToken())
-    monkeypatch.setattr(signing, "get_pin", lambda *a, **k: "1234")
     monkeypatch.setattr(signing, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
     monkeypatch.setattr(signing, "get_common_name", lambda name: "SIGNER")
     monkeypatch.setattr(signing, "normalize_issuer_name", lambda s: "ISSUER")
     monkeypatch.setattr(signing, "PKCS11Signer", lambda **kw: ("pk-signer", kw))
     monkeypatch.setattr(signing, "_make_raw_signer", lambda session, key_id: ("raw-signer", key_id))
 
-    common = dict(native=False, reader=None, pkcs11_lib="lib.so", token_label=None, cert_id=None,
-                  pin_source=None, pin_env_var=None, pin_fd=None, tsa_url=None)
+    common = dict(native=False, reader=None, pkcs11_lib="lib.so", token_label=None, cert_id=None)
 
-    # Not quiet: exposes the fields the command bodies read, and prints the identity block.
-    with cli._signing_session(**common, quiet=False) as ctx:
+    with cli._signing_session(**common, pin="1234") as ctx:
         assert ctx.cert is not None
         assert (ctx.signer_name, ctx.issuer_name) == ("SIGNER", "ISSUER")
         assert ctx.cert_serial == format(_FakeCert.serial_number, "X")     # "1A"
+        # Display fields for the CLI's identity block (the session no longer prints it).
+        assert (ctx.source_caption, ctx.source_display, ctx.key_id) == ("Token", "tok", b"\x01")
         # The PKCS#11 backend builds a PKCS11Signer bound to the selected key, and the XML raw signer
         # via _make_raw_signer; each factory is memoized (built at most once).
         pk = ctx.pyhanko_signer()
         assert pk[0] == "pk-signer" and pk[1]["cert_id"] == b"\x01"
         assert ctx.pyhanko_signer() is pk                                  # cached, not rebuilt
         assert ctx.raw_signer() == ("raw-signer", b"\x01")
-    out = capsys.readouterr().out
-    assert "SIGNER" in out and "ISSUER" in out and "tok" in out         # identity block printed
+        last_ctx = ctx
+    assert capsys.readouterr().out == ""                    # presentation-free session
 
-    # Quiet: yields the same context but prints nothing identifying.
-    with cli._signing_session(**common, quiet=True) as ctx:
-        assert ctx.signer_name == "SIGNER" and ctx.cert_serial == "1A"
+    # The CLI prints the identity block from the context; --quiet suppresses it entirely.
+    cli._print_signing_info(last_ctx, tsa_url=None, quiet=False)
+    out = capsys.readouterr().out
+    assert "SIGNER" in out and "ISSUER" in out and "tok" in out
+    cli._print_signing_info(last_ctx, tsa_url=None, quiet=True)
     assert capsys.readouterr().out == ""                                # silent under --quiet
 
 
-def test_signing_session_warns_on_backend_mismatched_options(monkeypatch, capsys):
+def test_signing_session_notes_backend_mismatched_options(monkeypatch):
     # The backend-option pre-flight lives inside _signing_session (shared by all 8 sign commands),
-    # so no command can forget it: --reader without --native warns on stderr, pre-PIN.
+    # so no command can forget it: --reader without --native is reported through notify, pre-PIN.
     monkeypatch.setattr(signing, "load_pkcs11_lib", lambda lib: object())
     monkeypatch.setattr(signing, "find_token", lambda lib, label: _FakeToken())
-    monkeypatch.setattr(signing, "get_pin", lambda *a, **k: "1234")
     monkeypatch.setattr(signing, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
     monkeypatch.setattr(signing, "get_common_name", lambda name: "SIGNER")
     monkeypatch.setattr(signing, "normalize_issuer_name", lambda s: "ISSUER")
 
+    notes = []
     with cli._signing_session(native=False, reader="ACS ACR39U 00 00", pkcs11_lib="lib.so",
-                              token_label=None, cert_id=None, pin_source=None, pin_env_var=None,
-                              pin_fd=None, tsa_url=None, quiet=True):
+                              token_label=None, cert_id=None, pin="1234", notify=notes.append):
         pass
-    assert "--reader only applies to --native" in capsys.readouterr().err
+    assert any("--reader only applies to --native" in n for n in notes)
+
+    # Without a notify sink (the public API), the note is dropped and nothing is printed.
+    with cli._signing_session(native=False, reader="ACS ACR39U 00 00", pkcs11_lib="lib.so",
+                              token_label=None, cert_id=None, pin="1234"):
+        pass
 
 
 class _FakeHybridWriter:
@@ -1293,9 +1299,10 @@ def test_sign_one_pdf_rejects_hybrid_xref_by_default(monkeypatch, tmp_path):
     assert _FakeHybridWriter.last_strict is True                 # default opens strict
 
 
-def test_sign_one_pdf_allows_hybrid_xref_with_flag(monkeypatch, tmp_path, capsys):
-    # --allow-hybrid-xref opens the PDF non-strict and warns instead of refusing; we stop right
-    # after the guard (before the real pyHanko machinery) via a sentinel from enumerate_sig_fields.
+def test_sign_one_pdf_allows_hybrid_xref_with_flag(monkeypatch, tmp_path):
+    # --allow-hybrid-xref opens the PDF non-strict and warns (via notify) instead of refusing; we
+    # stop right after the guard (before the real pyHanko machinery) via a sentinel from
+    # enumerate_sig_fields.
     monkeypatch.setattr(signing, "IncrementalPdfFileWriter", _FakeHybridWriter)
 
     class _Sentinel(Exception):
@@ -1307,9 +1314,10 @@ def test_sign_one_pdf_allows_hybrid_xref_with_flag(monkeypatch, tmp_path, capsys
 
     src = tmp_path / "in.pdf"
     src.write_bytes(b"%PDF-1.7\n")
+    notes = []
     with pytest.raises(_Sentinel):                               # got past the guard, no RuntimeError
         cli._sign_one_pdf(input_pdf=src, output_pdf=tmp_path / "out.pdf",
-                          allow_hybrid_xref=True, **_SIGN_ONE_PDF_ARGS)
+                          allow_hybrid_xref=True, notify=notes.append, **_SIGN_ONE_PDF_ARGS)
     assert _FakeHybridWriter.last_strict is False                # opened non-strict to allow signing
-    err = capsys.readouterr().err
-    assert "hybrid cross-reference sections" in err and "--allow-hybrid-xref" in err
+    joined = " ".join(notes)
+    assert "hybrid cross-reference sections" in joined and "--allow-hybrid-xref" in joined
