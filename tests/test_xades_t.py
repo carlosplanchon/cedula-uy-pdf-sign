@@ -194,3 +194,23 @@ def test_tsa_ca_wrong_anchor_does_not_trust_timestamp():
     # The core signature is intact and the signer chain is fine, but the unverified timestamp holds
     # the result at INDETERMINATE (an unsigned property never makes it INVALID).
     assert result.indication == "INDETERMINATE"
+
+
+# --- the same structure the other two formats return ---------------------------
+
+def test_a_xades_timestamp_is_reported_as_data_too():
+    """Every format now carries a TimestampInfo, so a consumer reads one field instead of knowing
+    which format it holds and which check names that format happens to use."""
+    signed = _sign(_dummy_timestamper())
+    result = verify_xml(signed)[0]
+
+    assert result.timestamp is not None
+    assert result.timestamp.present is True
+    assert result.timestamp.gen_time is not None
+    # No anchors were given, so the chain was never looked at. That is not the same as untrusted.
+    assert result.timestamp.trusted is None
+
+
+def test_a_xades_bes_signature_carries_no_timestamp_info():
+    result = verify_xml(_sign())[0]
+    assert result.timestamp is None

@@ -193,6 +193,18 @@ def verify(
 
     For a detached ``.p7s``, ``original`` is the file it signs; by default the
     ``<x>.p7s -> <x>`` convention is used.
+
+    ``tsa_ca`` holds the anchors an RFC 3161 signature timestamp's own chain is validated
+    against, and applies to all three formats. It is deliberately separate from ``ca_file``:
+    those decide who is accepted as having *signed* the document, and a TSA has no business
+    widening that. Without it a timestamp is reported as present and unvalidated, which is
+    neither trusted nor broken. Each result carries the outcome as
+    :class:`~firmauy.verify_common.TimestampInfo` on ``.timestamp``; read that rather than
+    parsing check names, whose wording differs per format.
+
+    .. versionchanged:: 1.12.0
+       ``tsa_ca`` used to apply to XML only, and the PDF and CMS verifiers discarded pyHanko's
+       timestamp status entirely, so a broken timestamp went unmentioned.
     """
     from firmauy._shared import (
         _INDICATION_RANK,
@@ -206,11 +218,15 @@ def verify(
     kind = _detect_signature_kind(path)
     roots, intermediates = _resolve_trust_anchors(Path(ca_file) if ca_file else None, no_trust)
 
+    # Resolved once for every format. It used to be worked out inside the XML branch only, so
+    # --tsa-ca silently did nothing for a PDF or a .p7s: the option was accepted and ignored.
+    tsa_roots, tsa_others = _resolve_tsa_anchors(Path(tsa_ca) if tsa_ca else None)
+
     if kind == "pdf":
         results = verify_pdf(path, trust_roots=roots, intermediates=intermediates,
-                             check_revocation=check_revocation)
+                             check_revocation=check_revocation,
+                             tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)
     elif kind == "xml":
-        tsa_roots, tsa_others = _resolve_tsa_anchors(Path(tsa_ca) if tsa_ca else None)
         results = verify_xml(path.read_bytes(), trust_roots=roots, intermediates=intermediates,
                              check_revocation=check_revocation,
                              tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)
@@ -223,7 +239,8 @@ def verify(
             )
         with orig.open("rb") as data:
             results = [verify_cms(data, path.read_bytes(), trust_roots=roots,
-                                  intermediates=intermediates, check_revocation=check_revocation)]
+                                  intermediates=intermediates, check_revocation=check_revocation,
+                                  tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)]
 
     overall = (max((r.indication for r in results), key=lambda ind: _INDICATION_RANK[ind])
                if results else "INDETERMINATE")

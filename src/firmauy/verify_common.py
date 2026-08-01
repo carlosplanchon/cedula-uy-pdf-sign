@@ -12,6 +12,13 @@ Indication model (mirrors the EU DSS semantics):
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Optional
+
+# Check names for a signature timestamp, shared by the PDF and CMS verifiers. XAdES has its own
+# pair carrying "XAdES-T", which is meaningful there and is left alone.
+TS_PRESENT = "signature timestamp present (TSA not trust-validated)"
+TS_TRUSTED = "signature timestamp (TSA chain validated)"
 
 
 @dataclass
@@ -19,6 +26,30 @@ class Check:
     name: str
     ok: bool
     detail: str = ""
+
+
+@dataclass
+class TimestampInfo:
+    """What is known about a signature's RFC 3161 timestamp, as data rather than as prose.
+
+    The three-valued fields are the point. ``None`` means *not evaluated*, which is neither a
+    pass nor a failure and is the usual case: without TSA trust anchors the token's chain is
+    never checked, and a consumer that reads False there would be reporting a problem that was
+    never looked for. pyHanko itself returns ``trusted=False`` in that situation, so the
+    distinction has to be restored here, where it is known whether anchors were supplied.
+
+    A timestamp says *when* a signature existed. It is separate from whether the signature is
+    valid, and worth keeping separate: a document can carry a perfectly good signature and a
+    broken timestamp, and saying so needs two verdicts, not one.
+    """
+
+    present: bool = False
+    intact: Optional[bool] = None       # the token's own signature is unbroken
+    valid: Optional[bool] = None        # ...and cryptographically correct
+    trusted: Optional[bool] = None      # the TSA chain reached a trusted root
+    gen_time: Optional[datetime] = None
+    tsa_common_name: str = ""
+    detail: str = ""                    # why, when something is not True
 
 
 @dataclass
@@ -30,6 +61,9 @@ class VerifyResult:
     signer: dict = field(default_factory=dict)
     issuer: dict = field(default_factory=dict)
     trusted: bool = False
+    # None when the format carries no timestamp. A consumer should read this rather than parse
+    # the check rows: the rows are display and their wording differs per format.
+    timestamp: Optional[TimestampInfo] = None
 
 
 # pyHanko logs a full traceback at WARNING when it cannot build a trust path during CMS or

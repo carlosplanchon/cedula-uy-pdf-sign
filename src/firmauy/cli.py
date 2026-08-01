@@ -1576,12 +1576,34 @@ def _redact_issuer(issuer: dict, signer: dict) -> dict:
     return out
 
 
+def _timestamp_to_json_obj(info) -> Optional[dict]:
+    """The timestamp as data, so a consumer never has to read a check's wording to find out
+    whether the stamp held. null when the signature carries none.
+
+    ``trusted`` is null when no TSA anchors were supplied: the chain was not looked at, which is
+    a third state and not a failure. Nothing here is redacted, since none of it is about the
+    cardholder: it names the timestamping authority, not the signer.
+    """
+    if info is None:
+        return None
+    return {
+        "present": info.present,
+        "intact": info.intact,
+        "valid": info.valid,
+        "trusted": info.trusted,
+        "gen_time": info.gen_time.isoformat() if info.gen_time else None,
+        "tsa_common_name": info.tsa_common_name,
+        "detail": info.detail,
+    }
+
+
 def _result_to_json_obj(result, redact: bool) -> dict:
     return {
         "indication": result.indication,
         "signer": _redact_signer(result.signer) if redact else result.signer,
         "issuer": _redact_issuer(result.issuer, result.signer) if redact else result.issuer,
         "trusted": result.trusted,
+        "timestamp": _timestamp_to_json_obj(result.timestamp),
         "checks": [
             {"name": c.name, "ok": c.ok, "detail": _redact_detail(c.detail) if redact else c.detail}
             for c in result.checks
@@ -1641,10 +1663,12 @@ _REDACT_OPT_HELP = (
     "e.g. for sharing logs or issues."
 )
 _TSA_CA_OPT_HELP = (
-    "PEM bundle of the trusted timestamping authority's certificate(s), for an XAdES-T XML. When "
-    "given, the timestamp's TSA is validated and, on success, the signing certificate is evaluated "
-    "at the trusted timestamp time (long-term validation). Without it the timestamp is only checked "
-    "to bind to the signature (the TSA is not trusted). PDF/CMS timestamps use --ca-file instead."
+    "PEM bundle of the trusted timestamping authority's certificate(s), for a PDF, a XAdES-T XML "
+    "or a detached .p7s. When given, the timestamp's own chain is validated and, for XAdES-T, the "
+    "signing certificate is then evaluated at the trusted timestamp time (long-term validation). "
+    "Without it a timestamp is reported as present and unvalidated, which is neither trusted nor "
+    "broken. Kept separate from --ca-file on purpose: those anchors decide who is accepted as "
+    "having signed the document, and a timestamping authority has no business widening that."
 )
 
 
@@ -1877,8 +1901,7 @@ def verify_cmd(
 
     Same checks, flags, indication model and exit codes as the specific verify-* commands
     (0 VALID, 1 INVALID, 2 INDETERMINATE). A detached .p7s also needs its original file:
-    by default the '<x>.p7s -> <x>' name is used, or pass --original. --tsa-ca applies only to a
-    XAdES-T XML.
+    by default the '<x>.p7s -> <x>' name is used, or pass --original.
     """
     try:
         json_output = json_output or json_pretty
@@ -1904,27 +1927,27 @@ def verify_cmd(
                 fg=typer.colors.YELLOW, err=True,
             )
 
-        if tsa_ca is not None and kind != "xml":
-            typer.secho(
-                f"Note: --tsa-ca is ignored for a {kind.upper()} file "
-                "(it applies to a XAdES-T XML; PDF/CMS timestamps use --ca-file).",
-                fg=typer.colors.YELLOW, err=True,
-            )
-
         roots, intermediates = _resolve_trust_anchors(ca_file, no_trust, notify=_warn)
+        # Resolved for every format. This used to be XML-only, and a note here told the user that
+        # --tsa-ca was ignored for a PDF and that "PDF/CMS timestamps use --ca-file", which was
+        # the wrong advice as well as a dead option: --ca-file decides who may have *signed* the
+        # document, and pointing it at a TSA to get a timestamp validated widens that.
+        tsa_roots, tsa_others = _resolve_tsa_anchors(tsa_ca)
 
         if kind == "pdf":
             results = verify_pdf(input_file, trust_roots=roots, intermediates=intermediates,
-                                 check_revocation=check_revocation)
+                                 check_revocation=check_revocation,
+                                 tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)
         elif kind == "xml":
-            tsa_roots, tsa_others = _resolve_tsa_anchors(tsa_ca)
             results = verify_xml(input_file.read_bytes(), trust_roots=roots,
                                  intermediates=intermediates, check_revocation=check_revocation,
                                  tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)
         else:  # cms / detached .p7s
             with orig.open("rb") as data:
                 results = [verify_cms(data, input_file.read_bytes(), trust_roots=roots,
-                                      intermediates=intermediates, check_revocation=check_revocation)]
+                                      intermediates=intermediates,
+                                      check_revocation=check_revocation,
+                                      tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)]
 
         overall = _emit_verify(results, json_output, pretty=json_pretty, redact=redact)
         if overall == "INVALID":

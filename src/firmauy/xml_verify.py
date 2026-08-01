@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from lxml import etree
 
 from firmauy.cert_utils import name_fields, to_asn1_cert, to_asn1_certs
-from firmauy.verify_common import Check, VerifyResult, muted_path_building_warnings
+from firmauy.verify_common import Check, TimestampInfo, VerifyResult, muted_path_building_warnings
 from firmauy.xml_sign import (
     SIGNED_PROPS_TYPE,
     _c14n,
@@ -90,6 +90,39 @@ def _verify_chain(leaf, intermediates, roots, at_time, check_revocation=False) -
 TS_CHECK_NAME = "signature timestamp present (XAdES-T, TSA not trust-validated)"
 # Check name when --tsa-ca was given and the RFC 3161 token validated against it: trusted time.
 TS_CHECK_NAME_TRUSTED = "signature timestamp (XAdES-T, TSA chain validated)"
+
+
+def _timestamp_info(check, trusted_time, tsa_evaluated: bool) -> TimestampInfo:
+    """The XAdES timestamp outcome in the shape the other two verifiers return.
+
+    Built from what this module already worked out rather than re-derived: the check carries
+    whether the token parsed and bound, and ``trusted_time`` is non-None only when the TSA chain
+    validated. As everywhere, ``trusted`` stays None when no anchors were supplied, because not
+    having looked is not the same as having looked and found nothing.
+    """
+    return TimestampInfo(
+        present=True,
+        intact=check.ok,
+        valid=check.ok,
+        trusted=(trusted_time is not None) if tsa_evaluated else None,
+        gen_time=trusted_time or _gen_time_from(check.detail),
+        detail=check.detail,
+    )
+
+
+def _gen_time_from(detail: str) -> Optional[datetime]:
+    """Pull the genTime back out of the check's own wording when the TSA was not validated.
+
+    Ugly, and deliberately contained here: the untrusted branch formats the time into its detail
+    and does not otherwise return it, and changing that would change a released check's text.
+    """
+    match = re.search(r"genTime (\S+)", detail or "")
+    if not match:
+        return None
+    try:
+        return datetime.fromisoformat(match.group(1))
+    except ValueError:
+        return None
 
 
 def _verify_timestamp(sig, tsa_trust_roots=None, tsa_other_certs=None) -> Optional[tuple]:
@@ -285,10 +318,14 @@ def _verify_signature(
 
     ts_result = _verify_timestamp(sig, tsa_trust_roots, tsa_other_certs)   # None for plain XAdES-BES
     trusted_time = None
+    timestamp = None
     if ts_result is not None:
         ts_check, trusted_time = ts_result
         checks.append(ts_check)
         timestamp_ok = ts_check.ok
+        # The same structure the PDF and CMS verifiers return, so a consumer can read one field
+        # instead of knowing which format it is holding and which check names that format uses.
+        timestamp = _timestamp_info(ts_check, trusted_time, bool(tsa_trust_roots))
     else:
         timestamp_ok = True
 
@@ -318,4 +355,5 @@ def _verify_signature(
         signer={**name_fields(cert.subject), "certificate_serial": format(cert.serial_number, "X")},
         issuer=name_fields(cert.issuer),
         trusted=trusted,
+        timestamp=timestamp,
     )

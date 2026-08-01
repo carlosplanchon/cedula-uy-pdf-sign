@@ -588,14 +588,18 @@ def test_verify_original_ignored_for_non_cms_warns(tmp_path):
     assert result.exit_code == 1                       # still verified the XML (no signature)
 
 
-def test_verify_tsa_ca_ignored_for_non_xml_warns(tmp_path):
-    # --tsa-ca applies only to a XAdES-T XML; for a PDF/CMS it is warned, not silently dropped.
+def test_verify_tsa_ca_is_no_longer_refused_for_a_pdf(tmp_path):
+    """It used to print "--tsa-ca is ignored for a PDF file" and drop the option, along with the
+    advice that "PDF/CMS timestamps use --ca-file". Both were wrong: the option now applies to
+    every format, and --ca-file decides who may have *signed* the document, so pointing it at a
+    timestamping authority to get a stamp validated widens that instead."""
     pdf = tmp_path / "a.pdf"
     pdf.write_bytes(b"%PDF-1.7\n")
     tsaca = tmp_path / "tsa.pem"
     tsaca.write_bytes(b"-----BEGIN CERTIFICATE-----\nnot real\n-----END CERTIFICATE-----\n")
     result = runner.invoke(app, ["verify", str(pdf), "--tsa-ca", str(tsaca), "--no-trust"])
-    assert "--tsa-ca is ignored" in result.output
+    assert "--tsa-ca is ignored" not in result.output
+    assert "--ca-file" not in result.output
 
 
 def test_resolve_tsa_anchors(tmp_path):
