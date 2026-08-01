@@ -26,6 +26,7 @@ from firmauy.xml_verify import verify_xml
 # Domain exceptions, re-exported so API consumers can catch precise conditions (or the whole
 # family through FirmaUYError) from one place. See firmauy.errors for the hierarchy.
 from firmauy.errors import (
+    BatchSignCancelled as BatchSignCancelled,
     BatchSignError as BatchSignError,
     CardNotFoundError as CardNotFoundError,
     CertificateError as CertificateError,
@@ -565,6 +566,7 @@ def sign_files(
     overwrite: bool = False,
     verify: bool = False,
     progress: Optional[Callable[[int, Path, Path], None]] = None,
+    should_continue: Optional[Callable[[], bool]] = None,
 ) -> list[SignReport]:
     """Sign several files in a single signing session (one card session, one PIN check for all).
 
@@ -577,11 +579,21 @@ def sign_files(
     output_path)``, where ``index`` is 0-based into ``paths``. It runs on the calling thread,
     inside the card session, so it should return quickly and must not touch the card.
 
+    ``should_continue`` is asked, before each file, whether to keep going; returning False raises
+    :class:`BatchSignCancelled` with the same partial result. It is only consulted between files:
+    a signature is written whole or not at all, so a long batch stops at the next boundary rather
+    than part-way through a document. A batch of one large PDF therefore cannot be interrupted,
+    which is the honest answer and the one a caller should show. Like ``progress``, it runs on the
+    calling thread inside the card session, so it must return quickly and must not touch the card.
+
     Fail-fast, but not silently: the first file that fails raises :class:`BatchSignError`, whose
     ``completed`` holds the reports for everything already written and whose ``failed_index`` and
     ``failed_path`` say where it stopped. Those outputs stay on disk because they are real,
     valid signatures, and a caller that can say "2 of 7 were signed and they are fine" is worth
     much more than one that can only say it failed.
+
+    .. versionchanged:: 1.11.0
+       Added ``should_continue``.
 
     .. versionchanged:: 1.10.0
        Added ``progress``, and a partial batch now raises :class:`BatchSignError` instead of
@@ -639,6 +651,14 @@ def sign_files(
         pin=pin, pin_provider=pin_provider,
     ) as ctx:
         for index, p in enumerate(items):
+            # Asked between files, never inside one: an output is written whole or not at all,
+            # so there is no point where stopping could leave a truncated signature behind.
+            if should_continue is not None and not should_continue():
+                raise BatchSignCancelled(
+                    f"batch cancelled before {p} (file {index + 1} of {len(items)}); "
+                    f"{len(reports)} already signed",
+                    completed=reports, stopped_before=index,
+                )
             try:
                 kind = _resolve_sign_kind(p, sa)
                 out = _output_path_for(p, kind, out_dir)

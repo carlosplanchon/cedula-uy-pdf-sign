@@ -132,6 +132,29 @@ class DetachedOriginalRequiredError(FirmaUYError):
 # ---------------------------------------------------------------------------
 
 
+class BatchSignCancelled(FirmaUYError):
+    """The caller asked a batch to stop, and it did, between files.
+
+    ``completed`` holds one :class:`~firmauy.api.SignReport` per file written before the stop, and
+    ``stopped_before`` is the index of the first file that was never attempted. Everything in
+    ``completed`` is on disk and valid.
+
+    Deliberately **not** a :class:`BatchSignError`: somebody pressing cancel is not a failure, and
+    a caller reporting "it broke" should not catch it by accident. Both carry ``completed``
+    because both leave real signatures behind.
+
+    The stop is only ever honoured between files. A signature is written whole or not at all, so
+    there is no point at which a half-written output could be left behind.
+
+    .. versionadded:: 1.11.0
+    """
+
+    def __init__(self, message: str, *, completed=None, stopped_before: int = -1):
+        super().__init__(message)
+        self.completed = list(completed or [])
+        self.stopped_before = stopped_before
+
+
 class BatchSignError(FirmaUYError):
     """A batch stopped at one file, carrying what had already been signed.
 

@@ -154,3 +154,31 @@ def test_batch_sign_error_defaults_to_nothing_completed():
     assert exc.completed == []
     assert exc.failed_index == -1
     assert exc.failed_path is None
+
+
+# --- a batch the caller stopped ---------------------------------------------
+
+def test_cancelling_a_batch_is_not_a_failure():
+    """Somebody pressing cancel is not the batch breaking, and a caller reporting "it broke"
+    must not catch it by accident."""
+    from firmauy.api import BatchSignCancelled, BatchSignError, FirmaUYError
+
+    assert issubclass(BatchSignCancelled, FirmaUYError)
+    assert not issubclass(BatchSignCancelled, BatchSignError)
+    assert not issubclass(BatchSignError, BatchSignCancelled)
+
+
+def test_batch_sign_cancelled_carries_what_was_already_signed():
+    from firmauy.api import BatchSignCancelled
+
+    exc = BatchSignCancelled("stopped", completed=["a", "b"], stopped_before=2)
+    assert exc.completed == ["a", "b"]
+    assert exc.stopped_before == 2
+
+
+def test_batch_sign_cancelled_defaults_to_nothing_done():
+    from firmauy.api import BatchSignCancelled
+
+    exc = BatchSignCancelled("stopped")
+    assert exc.completed == []
+    assert exc.stopped_before == -1

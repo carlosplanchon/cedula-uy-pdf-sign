@@ -172,6 +172,28 @@ Those outputs are deliberately not rolled back: they are real signatures, and be
 "2 of 7 were signed and they are fine" is worth a great deal more to the person waiting than
 "it failed".
 
+`should_continue` is asked, before each file, whether to keep going. It is how a GUI offers a
+Cancel button on a long batch:
+
+```python
+from firmauy.api import BatchSignCancelled, sign_files
+
+try:
+    reports = sign_files(paths, pin, should_continue=lambda: not stop_requested.is_set())
+except BatchSignCancelled as exc:
+    print(f"Stopped after {len(exc.completed)} files. They are signed and still there.")
+```
+
+It is only consulted **between** files. A signature is written whole or not at all, so a batch
+stops at the next boundary rather than part-way through a document, and a batch of one large PDF
+cannot be interrupted at all. That is the honest answer, and the one to show the person waiting.
+
+`BatchSignCancelled` is deliberately not a `BatchSignError`: somebody pressing cancel is not the
+batch breaking, and a caller reporting a failure should not catch it by accident. Both carry
+`completed`, because both leave real signatures behind.
+
+> **Changed in 1.11.0:** `should_continue` is new.
+
 > **Changed in 1.10.0:** `progress` is new, and a partial batch now raises `BatchSignError`
 > instead of letting the underlying error through with the completed work lost.
 
@@ -327,6 +349,8 @@ The hierarchy, under a common `FirmaUYError` base:
 - `BatchSignError`: `sign_files()` stopped at one file. Carries `completed` (the reports for
   everything already written, still on disk), `failed_index`, `failed_path`, and the real failure
   as `__cause__`.
+- `BatchSignCancelled`: `sign_files()` was asked to stop through `should_continue`, and did, at a
+  file boundary. Carries `completed` and `stopped_before`. Not a `BatchSignError`, on purpose.
 
 Catch `FirmaUYError` for the whole family. These classes deliberately do **not** inherit from the
 built-in error types: environment problems (pcscd down, PKCS#11 module missing) stay plain

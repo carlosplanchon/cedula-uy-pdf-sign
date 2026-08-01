@@ -872,3 +872,82 @@ def test_api_sign_files_keeps_the_partial_work_when_one_file_fails(
 
     from firmauy.api import OutputExistsError
     assert isinstance(exc.__cause__, OutputExistsError)  # the real reason is still reachable
+
+
+def test_api_sign_files_stops_between_files_when_asked(softhsm, tmp_path, monkeypatch):
+    """A long batch has to be interruptible, and the only safe place is a file boundary: an
+    output is written whole or not at all."""
+    from firmauy.api import BatchSignCancelled, sign_files
+
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+    monkeypatch.setenv("SOFTHSM2_CONF", softhsm.env["SOFTHSM2_CONF"])
+
+    paths = []
+    for name in ("a.bin", "b.bin", "c.bin"):
+        p = tmp_path / name
+        p.write_bytes(b"contenido")
+        paths.append(p)
+
+    asked = []
+
+    def should_continue():
+        asked.append(len(asked))
+        return len(asked) <= 2          # let the first two through, stop before the third
+
+    with pytest.raises(BatchSignCancelled) as ei:
+        sign_files(paths, PIN, native=False, pkcs11_lib=softhsm.module,
+                   token_label="test-cedula", should_continue=should_continue)
+
+    exc = ei.value
+    assert exc.stopped_before == 2
+    assert len(exc.completed) == 2
+    assert all(r.output_path.exists() for r in exc.completed)   # left on disk, they are real
+    assert not (tmp_path / "c.bin.p7s").exists()                # never started
+
+
+def test_api_sign_files_can_be_stopped_before_it_starts(softhsm, tmp_path, monkeypatch):
+    """Cancelling while the PIN prompt is still up must not sign anything."""
+    from firmauy.api import BatchSignCancelled, sign_files
+
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+    monkeypatch.setenv("SOFTHSM2_CONF", softhsm.env["SOFTHSM2_CONF"])
+
+    src = tmp_path / "a.bin"
+    src.write_bytes(b"contenido")
+
+    with pytest.raises(BatchSignCancelled) as ei:
+        sign_files([src], PIN, native=False, pkcs11_lib=softhsm.module,
+                   token_label="test-cedula", should_continue=lambda: False)
+
+    assert ei.value.completed == []
+    assert ei.value.stopped_before == 0
+    assert not (tmp_path / "a.bin.p7s").exists()
+
+
+def test_api_sign_files_without_the_callback_is_unchanged(softhsm, tmp_path, monkeypatch):
+    from firmauy.api import sign_files
+
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+    monkeypatch.setenv("SOFTHSM2_CONF", softhsm.env["SOFTHSM2_CONF"])
+
+    src = tmp_path / "a.bin"
+    src.write_bytes(b"contenido")
+
+    reports = sign_files([src], PIN, native=False, pkcs11_lib=softhsm.module,
+                         token_label="test-cedula")
+    assert len(reports) == 1
