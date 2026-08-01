@@ -318,3 +318,70 @@ def test_redacting_leaves_the_timestamp_alone(tmp_path):
     hidden = _result_to_json_obj(verify_pdf(path)[0], redact=True)["timestamp"]
 
     assert plain == hidden
+
+
+# --- a broken timestamp, which is the case the whole thing started from --------
+
+def _status_with(timestamp_validity, *, coverage="ENTIRE_FILE"):
+    """A pyHanko-shaped status built by hand.
+
+    A genuinely corrupted timestamp cannot be produced by editing the file: in a PDF and in a
+    .p7s the token lives inside the CMS structure, so tampering with it breaks the signature
+    first and the interesting branch is never reached. XAdES can be tampered that way because
+    its timestamp is a separate XML element, and test_xades_t does exactly that. Here the branch
+    is exercised directly, which is also how the gap was first reproduced.
+    """
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        intact=True, valid=True, trusted=True, signing_cert=None,
+        coverage=SimpleNamespace(name=coverage),
+        timestamp_validity=timestamp_validity,
+    )
+
+
+def _broken_token():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(intact=False, valid=False, trusted=False, timestamp=None,
+                           signing_cert=None)
+
+
+def test_a_broken_timestamp_is_said_out_loud():
+    """The original report: a signature whose timestamp was broken in every way pyHanko reports
+    came back VALID with no row about it at all."""
+    from firmauy import cms_verify as cms
+    from firmauy import pdf_verify as pdf
+
+    for module in (pdf, cms):
+        result = module._map_status(_status_with(_broken_token()), True, True)
+        rows = _timestamp_checks(result)
+        assert rows and rows[0].ok is False, module.__name__
+        assert result.timestamp.intact is False
+
+
+def test_a_broken_timestamp_holds_the_verdict_at_indeterminate():
+    """Never INVALID: a timestamp is an unsigned attribute and cannot break the signature. Never
+    VALID either, which is what PAdES and CAdES used to say while a row underneath admitted the
+    token was broken. XAdES has held at INDETERMINATE since XAdES-T landed; now all three agree.
+    """
+    from firmauy import cms_verify as cms
+    from firmauy import pdf_verify as pdf
+
+    for module in (pdf, cms):
+        result = module._map_status(_status_with(_broken_token()), True, True)
+        assert result.indication == "INDETERMINATE", module.__name__
+        # And the signature's own checks are untouched, so it is clear what failed.
+        assert all(c.ok for c in result.checks if "timestamp" not in c.name)
+
+
+def test_a_sound_timestamp_does_not_hold_anything_back():
+    from types import SimpleNamespace
+
+    from firmauy import cms_verify as cms
+    from firmauy import pdf_verify as pdf
+
+    good = SimpleNamespace(intact=True, valid=True, trusted=True, timestamp=None,
+                           signing_cert=None)
+    for module in (pdf, cms):
+        assert module._map_status(_status_with(good), True, True).indication == "VALID"

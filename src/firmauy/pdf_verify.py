@@ -99,16 +99,23 @@ def _map_status(status, trust_evaluated: bool, tsa_evaluated: bool = False) -> V
     else:
         signer, issuer = {}, {}
 
+    info, ts_check = _timestamp_of(status, tsa_evaluated)
+
     if not (intact and valid):
         indication = "INVALID"
     elif not cov_ok:
         indication = "INDETERMINATE"   # valid, but does not cover the whole file
+    elif ts_check is not None and not ts_check.ok:
+        # A timestamp is an unsigned attribute, so a bad one never makes the signature INVALID.
+        # It does hold the result at INDETERMINATE, which is what the XAdES path has always done:
+        # saying VALID with a row underneath admitting the token is broken is a mixed message,
+        # and the word is the part somebody remembers.
+        indication = "INDETERMINATE"
     elif trust_evaluated:
         indication = "VALID" if trusted else "INDETERMINATE"
     else:
         indication = "INDETERMINATE"   # integrity OK, trust not evaluated
 
-    info, ts_check = _timestamp_of(status, tsa_evaluated)
     if ts_check is not None:
         checks.append(ts_check)
 

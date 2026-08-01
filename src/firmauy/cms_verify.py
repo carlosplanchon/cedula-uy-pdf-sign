@@ -110,14 +110,20 @@ def _map_status(status, trust_evaluated: bool, tsa_evaluated: bool = False) -> V
     else:
         signer, issuer = {}, {}
 
+    info, ts_check = _timestamp_of(status, tsa_evaluated)
+
     if not (intact and valid):
         indication = "INVALID"
+    elif ts_check is not None and not ts_check.ok:
+        # As in the PDF and XAdES paths: an unsigned attribute cannot make the signature INVALID,
+        # but a broken one holds the verdict at INDETERMINATE rather than letting VALID stand
+        # over a row that says the token does not check out.
+        indication = "INDETERMINATE"
     elif trust_evaluated:
         indication = "VALID" if trusted else "INDETERMINATE"
     else:
         indication = "INDETERMINATE"   # integrity OK, trust not evaluated
 
-    info, ts_check = _timestamp_of(status, tsa_evaluated)
     if ts_check is not None:
         checks.append(ts_check)
 
