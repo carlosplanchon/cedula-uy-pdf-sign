@@ -44,13 +44,23 @@ def test_version_flag_reports_package_version():
     assert f"firmauy {version('firmauy')}" in result.output
 
 
+def plain(output: str) -> str:
+    """Help text with the colour taken out. **Every** assertion about help text goes through here.
+
+    In CI, GITHUB_ACTIONS makes Rich force colour, and Rich styles an option name in pieces: it
+    emits "--tsa-ca" as "-", "-tsa" and "-ca" with escape codes between them, so the literal
+    string never appears. A raw substring check therefore passes on a developer's machine, where
+    Rich sees no terminal and emits none of that, and fails only in CI. This has now cost two
+    releases, so it lives in one place with its reason attached.
+    """
+    return re.sub(r"\x1b\[[0-9;]*m", "", output)
+
+
 def test_help_still_shows_app_description():
-    # The --version callback must not clobber the app's help text. Strip ANSI first: in CI
-    # (GITHUB_ACTIONS makes Rich force color) the option name is colorized, which splits
-    # "--version" with escape codes, so a raw substring check would spuriously fail.
+    # The --version callback must not clobber the app's help text.
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    clean = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    clean = plain(result.output)
     assert "Sign and verify PDF (PAdES)" in clean
     assert "--version" in clean
 
@@ -608,8 +618,24 @@ def test_every_verify_command_accepts_tsa_ca():
     four commands could not do. A person who knows their file is a PDF reaches for verify-pdf.
     """
     for command in ("verify", "verify-xml", "verify-pdf", "verify-any"):
-        out = runner.invoke(app, [command, "--help"]).output
-        assert "--tsa-ca" in out, f"{command} does not offer --tsa-ca"
+        assert "--tsa-ca" in plain(runner.invoke(app, [command, "--help"]).output), \
+            f"{command} does not offer --tsa-ca"
+
+
+def test_no_verify_command_rejects_tsa_ca_as_unknown(tmp_path):
+    """Offered in the help and actually accepted are two different things, and only the second is
+    what happens when somebody types it. Checked without going through the help renderer at all.
+    """
+    pem = tmp_path / "tsa.pem"
+    pem.write_bytes(_ANCHOR_PEM)
+    target = tmp_path / "archivo.pdf"
+    target.write_bytes(b"%PDF-1.7\n")
+
+    for command in ("verify", "verify-xml", "verify-pdf", "verify-any"):
+        out = plain(runner.invoke(app, [command, str(target), "--tsa-ca", str(pem)]).output)
+        # Whatever it says about the file is beside the point; what must not appear is Click
+        # refusing the option itself.
+        assert "No such option" not in out, f"{command} rejected --tsa-ca"
 
 
 def test_verify_pdf_actually_uses_the_tsa_anchors(tmp_path, monkeypatch):
