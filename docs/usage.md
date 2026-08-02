@@ -517,14 +517,29 @@ firmauy verify-xml signed.xml --tsa-ca tsa-ca.pem
 firmauy verify-xml signed.xml --json
 ```
 
-**Trusted timestamps and long-term validation (XAdES-T).** By default a timestamp is checked to be
-intact, to carry a valid signature of its own, and to *bind* to the signature it travels with. Its
-TSA is not validated, so the `genTime` is shown as asserted, not verified. Pass
+**Trusted timestamps and long-term validation.** By default a timestamp is checked to be intact,
+to carry a valid signature of its own, and to *bind* to the signature it travels with. Its TSA is
+not validated, so the `genTime` is shown as asserted, not verified. Pass
 `--tsa-ca <tsa-bundle.pem>` (the timestamping authority's certificate) to validate the RFC 3161
-token's chain: on success the timestamp counts as **trusted time** and, for XAdES-T, the signing
-certificate is evaluated **at that time** instead of now, so a signature stays VALID even after the
-signer's certificate later expires. There is no national TSA list to bundle, so this is
-bring-your-own. See [docs/trust-anchors.md](trust-anchors.md).
+token's chain: on success the timestamp counts as **trusted time** and the signing certificate is
+evaluated **at that time** instead of now, so a signature stays VALID even after the signer's
+certificate later expires. There is no national TSA list to bundle, so this is bring-your-own.
+See [docs/trust-anchors.md](trust-anchors.md).
+
+Only a trusted token moves that moment. Without `--tsa-ca` the `genTime` is a claim by an
+unvalidated TSA, and letting it decide which day the certificate is checked on would hand that
+decision to whoever could alter the file. When it does move, the chain row says so, so a VALID
+result over an expired certificate always carries the date it was judged on:
+
+```
+certificate chain to trusted root: RFC 5280 path validated to trusted root;
+                                   evaluated at trusted genTime 2026-07-30T14:32:11+00:00
+```
+
+⚠️ `--check-revocation` together with `--tsa-ca` is the one combination that can be **stricter**
+than either alone: revocation data is fetched now and then applied at the past moment, and a
+responder that will not answer for a date years back fails the chain. Carrying revocation data
+from signing time is the AdES `-LT` level, which firmauy does not produce.
 
 The TSA's own certificate is evaluated at the token's `genTime`, so a stamp does not stop being
 trusted when the responder certificate behind it expires, which for a short-lived responder would
@@ -540,6 +555,12 @@ otherwise happen within a year or two of signing.
 > the TSA at the `genTime` rather than at verification time, which is what XAdES already did and
 > what their own docstrings already claimed, so the same token no longer flips from trusted to
 > untrusted with nothing about the file having changed.
+>
+> **Changed in 1.13.0:** a trusted timestamp now also fixes when the *signing* certificate is
+> evaluated, in every format. Only XAdES did that, so the same signature over an expired
+> certificate came back VALID as XML and INDETERMINATE as PDF or `.p7s`. Files that used to be
+> reported INDETERMINATE for that reason are now reported VALID, which is the intended change and
+> the reason this is a minor release rather than a patch.
 
 What it checks (XAdES): the `SignedInfo` signature, each reference digest (so any change to the
 document is detected), the XAdES signing-certificate binding, and the certificate chain to a trusted

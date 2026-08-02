@@ -15,6 +15,7 @@ TSA are involved.
 
 import datetime
 import io
+from pathlib import Path
 
 from asn1crypto import keys as asn1keys
 from asn1crypto import x509 as asn1x509
@@ -24,6 +25,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from pyhanko.pdf_utils import generic
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.pdf_utils.writer import PageObject, PdfFileWriter
 from pyhanko.sign.signers import PdfSignatureMetadata, SimpleSigner, sign_pdf
 from pyhanko.sign.timestamps import DummyTimeStamper
@@ -32,6 +34,8 @@ from pyhanko_certvalidator.registry import SimpleCertificateStore
 from firmauy.cms_sign import sign_cms_detached
 from firmauy.cms_verify import verify_cms
 from firmauy.pdf_verify import verify_pdf
+from firmauy.verify_common import extract_timestamp_token
+from firmauy.xml_verify import verify_xml
 
 DATA = b"contenido a firmar"
 
@@ -321,80 +325,14 @@ def test_redacting_leaves_the_timestamp_alone(tmp_path):
 
 
 # --- a broken timestamp, which is the case the whole thing started from --------
-
-def _status_with(timestamp_validity, *, coverage="ENTIRE_FILE"):
-    """A pyHanko-shaped status built by hand.
-
-    A genuinely corrupted timestamp cannot be produced by editing the file: in a PDF and in a
-    .p7s the token lives inside the CMS structure, so tampering with it breaks the signature
-    first and the interesting branch is never reached. XAdES can be tampered that way because
-    its timestamp is a separate XML element, and test_xades_t does exactly that. Here the branch
-    is exercised directly, which is also how the gap was first reproduced.
-    """
-    from types import SimpleNamespace
-
-    return SimpleNamespace(
-        intact=True, valid=True, trusted=True, signing_cert=None,
-        coverage=SimpleNamespace(name=coverage),
-        timestamp_validity=timestamp_validity,
-    )
-
-
-def _broken_token():
-    from types import SimpleNamespace
-
-    return SimpleNamespace(intact=False, valid=False, trusted=False, timestamp=None,
-                           signing_cert=None)
-
-
-def test_a_broken_timestamp_is_said_out_loud():
-    """The original report: a signature whose timestamp was broken in every way pyHanko reports
-    came back VALID with no row about it at all."""
-    from firmauy import cms_verify as cms
-    from firmauy import pdf_verify as pdf
-
-    for module in (pdf, cms):
-        result = module._map_status(_status_with(_broken_token()), True, True)
-        rows = _timestamp_checks(result)
-        assert rows and rows[0].ok is False, module.__name__
-        assert result.timestamp.intact is False
-
-
-def test_a_broken_timestamp_holds_the_verdict_at_indeterminate():
-    """Never INVALID: a timestamp is an unsigned attribute and cannot break the signature. Never
-    VALID either, which is what PAdES and CAdES used to say while a row underneath admitted the
-    token was broken. XAdES has held at INDETERMINATE since XAdES-T landed; now all three agree.
-    """
-    from firmauy import cms_verify as cms
-    from firmauy import pdf_verify as pdf
-
-    for module in (pdf, cms):
-        result = module._map_status(_status_with(_broken_token()), True, True)
-        assert result.indication == "INDETERMINATE", module.__name__
-        # And the signature's own checks are untouched, so it is clear what failed.
-        assert all(c.ok for c in result.checks if "timestamp" not in c.name)
-
-
-def test_a_sound_timestamp_does_not_hold_anything_back():
-    from types import SimpleNamespace
-
-    from firmauy import cms_verify as cms
-    from firmauy import pdf_verify as pdf
-
-    good = SimpleNamespace(intact=True, valid=True, trusted=True, timestamp=None,
-                           signing_cert=None)
-    for module in (pdf, cms):
-        assert module._map_status(_status_with(good), True, True).indication == "VALID"
-
-
-# --- a real broken token, produced by editing the file ------------------------
 #
-# The helper above says a genuinely corrupted timestamp cannot be produced by editing a PDF or a
-# .p7s, because tampering would break the signature first. That is wrong, and the reason is the
-# whole point of the attribute: a signature timestamp lives in the SignerInfo's **unsigned**
-# attributes, which by construction are not covered by the signature. So the token can be
-# rewritten while the signature over the document stays perfectly intact, which is exactly the
-# case a verifier has to survive, and the one an attacker gets for free.
+# Produced by editing the file, in both formats. This used to be done with a hand-built pyHanko
+# status, on the belief that a corrupted timestamp could not be produced by editing a PDF or a
+# .p7s because tampering would break the signature first. That belief was wrong, and the reason
+# is the whole point of the attribute: a signature timestamp lives in the SignerInfo's
+# **unsigned** attributes, which by construction are not covered by the signature. So the token
+# can be rewritten while the signature over the document stays perfectly intact, which is exactly
+# the case a verifier has to survive, and the one an attacker gets for free.
 
 def _tamper_with_the_token(p7s: bytes) -> bytes:
     """Corrupt the timestamp token inside a .p7s, leaving everything else byte-identical."""
@@ -455,6 +393,69 @@ def test_a_tampered_timestamp_holds_the_verdict_at_indeterminate():
                         tsa_trust_roots=anchors)
 
     assert result.indication == "INDETERMINATE"
+
+
+def _tamper_with_the_pdf_token(path) -> bytes:
+    """The same edit, inside a PDF.
+
+    The token's signature bytes sit hex-encoded in the signature's ``/Contents``, which the
+    ByteRange deliberately skips, so flipping one hex digit changes nothing the document digest
+    covers. The length is unchanged, so every offset in the file still points where it did.
+    """
+    raw = Path(path).read_bytes()
+    with open(path, "rb") as f:
+        emb = list(PdfFileReader(f).embedded_signatures)[0]
+        token, _gen_time = extract_timestamp_token(emb.signer_info)
+    hexed = token["signer_infos"][0]["signature"].native.hex().upper().encode()
+    at = raw.find(hexed)
+    assert at >= 0, "could not find the token's signature inside the PDF"
+    data = bytearray(raw)
+    data[at] = ord("B") if data[at] != ord("B") else ord("C")
+    return bytes(data)
+
+
+def test_a_tampered_pdf_timestamp_is_caught_and_the_signature_is_not_accused(tmp_path):
+    tsa_cert, timestamper = _timestamper()
+    path, _cert = _signed_pdf(tmp_path, timestamper)
+    tampered = tmp_path / "tampered.pdf"
+    tampered.write_bytes(_tamper_with_the_pdf_token(path))
+    anchors = [x509.load_pem_x509_certificate(_pem(tsa_cert))]
+
+    result = verify_pdf(tampered, tsa_trust_roots=anchors)[0]
+
+    assert result.timestamp.valid is False
+    rows = _timestamp_checks(result)
+    assert rows and rows[0].ok is False
+    # The signature over the document is untouched, and every row about it still says so.
+    assert all(c.ok for c in result.checks if "timestamp" not in c.name)
+
+
+def test_a_tampered_pdf_timestamp_holds_the_verdict_at_indeterminate(tmp_path):
+    """Never INVALID: a timestamp is an unsigned attribute and cannot break the signature. Never
+    VALID either, which is what PAdES and CAdES used to say while a row underneath admitted the
+    token was broken. XAdES has held at INDETERMINATE since XAdES-T landed; now all three agree.
+    """
+    tsa_cert, timestamper = _timestamper()
+    path, signer_cert = _signed_pdf(tmp_path, timestamper)
+    tampered = tmp_path / "tampered.pdf"
+    tampered.write_bytes(_tamper_with_the_pdf_token(path))
+
+    result = verify_pdf(tampered,
+                        trust_roots=[x509.load_pem_x509_certificate(_pem(signer_cert))],
+                        tsa_trust_roots=[x509.load_pem_x509_certificate(_pem(tsa_cert))])[0]
+
+    assert result.indication == "INDETERMINATE"
+
+
+def test_a_sound_timestamp_does_not_hold_anything_back(tmp_path):
+    tsa_cert, timestamper = _timestamper()
+    path, signer_cert = _signed_pdf(tmp_path, timestamper)
+
+    result = verify_pdf(path,
+                        trust_roots=[x509.load_pem_x509_certificate(_pem(signer_cert))],
+                        tsa_trust_roots=[x509.load_pem_x509_certificate(_pem(tsa_cert))])[0]
+
+    assert result.indication == "VALID"
 
 
 # --- the TSA is judged when it signed, not when we happen to look --------------
@@ -528,6 +529,147 @@ def test_a_p7s_timestamp_is_judged_at_gentime_and_not_at_verification_time():
 
     assert now.timestamp.trusted is True
     assert later.timestamp.trusted is True, "the same token stopped being trusted with time"
+
+
+# --- and the signer is judged when they signed, once the stamp is trusted ------
+#
+# The point of a timestamp, one level up. A certificate expires and the signature it made does
+# not: the stamp proves the signature already existed while the certificate was still valid, so
+# that is the moment to judge the certificate at. XAdES has done this since XAdES-T landed and
+# PDF and CMS did not, so the same situation gave VALID in one format and INDETERMINATE in the
+# other two.
+
+def _chain(cn: str, *, leaf_days: int, timestamping: bool = False):
+    """``(ca, leaf, leaf_key)``: a CA and a leaf it issues, expiring in ``leaf_days``.
+
+    Built here rather than borrowed from test_xades_t, which omits KeyUsage on its leaves. XAdES
+    validates the chain itself and does not mind, but pyHanko enforces key usage on a CMS signer,
+    so a leaf without ``digital_signature`` never gets a trusted chain in a PDF or a .p7s no
+    matter what moment it is judged at. That cost an hour of blaming the wrong code.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"{cn} CA")])
+    ca = (x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name)
+          .public_key(ca_key.public_key()).serial_number(x509.random_serial_number())
+          .not_valid_before(now - datetime.timedelta(days=3650))
+          .not_valid_after(now + datetime.timedelta(days=3650))
+          .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+          .add_extension(x509.KeyUsage(
+              digital_signature=False, content_commitment=False, key_encipherment=False,
+              data_encipherment=False, key_agreement=False, key_cert_sign=True,
+              crl_sign=True, encipher_only=False, decipher_only=False), critical=True)
+          .sign(ca_key, hashes.SHA256()))
+
+    leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    builder = (x509.CertificateBuilder()
+               .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)]))
+               .issuer_name(ca_name).public_key(leaf_key.public_key())
+               .serial_number(x509.random_serial_number())
+               .not_valid_before(now - datetime.timedelta(days=1))
+               .not_valid_after(now + datetime.timedelta(days=leaf_days))
+               .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+               .add_extension(x509.KeyUsage(
+                   digital_signature=True, content_commitment=not timestamping,
+                   key_encipherment=False, data_encipherment=False, key_agreement=False,
+                   key_cert_sign=False, crl_sign=False, encipher_only=False,
+                   decipher_only=False), critical=True))
+    if timestamping:
+        builder = builder.add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.TIME_STAMPING]), critical=True)
+    return ca, builder.sign(ca_key, hashes.SHA256()), leaf_key
+
+
+def _signer_and_tsa(signer_days: int):
+    """A signer whose certificate expires in ``signer_days``, and a TSA good for a year."""
+    signer_ca, signer_leaf, signer_key = _chain("PEREZ JUAN", leaf_days=signer_days)
+    tsa_ca, tsa_leaf, tsa_key = _chain("MY TSA", leaf_days=365, timestamping=True)
+    a_cert, a_key = _asn1(tsa_key, tsa_leaf)
+    stamper = DummyTimeStamper(a_cert, a_key, certs_to_embed=SimpleCertificateStore())
+    return signer_ca, signer_leaf, signer_key, tsa_ca, tsa_leaf, tsa_key, stamper
+
+
+def test_a_trusted_stamp_lets_an_expired_signing_certificate_still_verify_a_pdf(tmp_path):
+    signer_ca, signer_leaf, signer_key, tsa_ca, _l, _k, stamper = _signer_and_tsa(1)
+    out = io.BytesIO()
+    sign_pdf(IncrementalPdfFileWriter(_blank_pdf()), PdfSignatureMetadata(field_name="Sig1"),
+             signer=_simple_signer(signer_key, signer_leaf), output=out, timestamper=stamper)
+    path = tmp_path / "firmado.pdf"
+    path.write_bytes(out.getvalue())
+    later = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2)
+
+    without = verify_pdf(path, trust_roots=[signer_ca], at_time=later)[0]
+    with_stamp = verify_pdf(path, trust_roots=[signer_ca], at_time=later,
+                            tsa_trust_roots=[tsa_ca])[0]
+
+    # No anchors for the TSA: nothing vouches for the date, so the expired certificate stands.
+    assert without.indication == "INDETERMINATE"
+    assert with_stamp.indication == "VALID"
+    chain = [c for c in with_stamp.checks if c.name == "certificate chain to trusted root"][0]
+    assert "trusted genTime" in chain.detail, "a VALID expired certificate must say why"
+
+
+def test_a_trusted_stamp_lets_an_expired_signing_certificate_still_verify_a_p7s():
+    signer_ca, signer_leaf, signer_key, tsa_ca, _l, _k, stamper = _signer_and_tsa(1)
+    p7s = sign_cms_detached(io.BytesIO(DATA), signer=_simple_signer(signer_key, signer_leaf),
+                            timestamper=stamper)
+    later = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2)
+
+    without = verify_cms(io.BytesIO(DATA), p7s, trust_roots=[signer_ca], at_time=later)
+    with_stamp = verify_cms(io.BytesIO(DATA), p7s, trust_roots=[signer_ca], at_time=later,
+                            tsa_trust_roots=[tsa_ca])
+
+    assert without.indication == "INDETERMINATE"
+    assert with_stamp.indication == "VALID"
+
+
+def test_the_three_formats_agree_about_an_expired_signer_with_a_trusted_stamp(tmp_path):
+    """The asymmetry this release exists to remove. Same situation, same answer, whatever the
+    file happens to be."""
+    from test_xades_t import _signed_with_tsa
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    later = now + datetime.timedelta(days=2)
+    signer_ca, signer_leaf, signer_key, tsa_ca, tsa_leaf, tsa_key, stamper = _signer_and_tsa(1)
+
+    out = io.BytesIO()
+    sign_pdf(IncrementalPdfFileWriter(_blank_pdf()), PdfSignatureMetadata(field_name="Sig1"),
+             signer=_simple_signer(signer_key, signer_leaf), output=out, timestamper=stamper)
+    pdf_path = tmp_path / "firmado.pdf"
+    pdf_path.write_bytes(out.getvalue())
+    p7s = sign_cms_detached(io.BytesIO(DATA), signer=_simple_signer(signer_key, signer_leaf),
+                            timestamper=stamper)
+    xml = _signed_with_tsa(signer_leaf, signer_key, tsa_leaf, tsa_key, tsa_ca, now)
+
+    kw = dict(trust_roots=[signer_ca], at_time=later, tsa_trust_roots=[tsa_ca])
+    said = {
+        "pdf": verify_pdf(pdf_path, **kw)[0].indication,
+        "cms": verify_cms(io.BytesIO(DATA), p7s, **kw).indication,
+        "xml": verify_xml(xml, **kw)[0].indication,
+    }
+    assert set(said.values()) == {"VALID"}, said
+
+
+def test_an_untrusted_stamp_does_not_move_the_moment(tmp_path):
+    """Only a *trusted* token counts. An unvalidated genTime is a claim by a stranger, and letting
+    it choose the day the signing certificate is checked on would hand that choice to whoever
+    could alter the file."""
+    signer_ca, signer_leaf, signer_key, _tsa_ca, _l, _k, stamper = _signer_and_tsa(1)
+    _other_ca, _ol, _ok = _chain("OTHER", leaf_days=365, timestamping=True)
+    p7s = sign_cms_detached(io.BytesIO(DATA), signer=_simple_signer(signer_key, signer_leaf),
+                            timestamper=stamper)
+    later = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2)
+
+    result = verify_cms(io.BytesIO(DATA), p7s, trust_roots=[signer_ca], at_time=later,
+                        tsa_trust_roots=[_other_ca])
+
+    assert result.timestamp.trusted is False
+    # The chain row, not the overall indication: a token that does not validate already holds the
+    # verdict at INDETERMINATE by itself, so asserting on the word would pass whether or not the
+    # moment moved. What has to stay false is the certificate, which expired before `later`.
+    chain = [c for c in result.checks if c.name == "certificate chain to trusted root"][0]
+    assert chain.ok is False, "an untrusted genTime was allowed to rescue an expired certificate"
+    assert "trusted genTime" not in chain.detail
 
 
 def test_a_stamp_from_an_expired_responder_is_still_not_trusted_under_the_wrong_root(tmp_path):

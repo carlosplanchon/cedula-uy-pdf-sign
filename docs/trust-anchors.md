@@ -115,6 +115,17 @@ exists to prevent. That is optimistic without an archive timestamp (the AdES `-L
 implemented): strictly, a self-asserted `genTime` needs independent proof the token existed before
 the certificate expired.
 
+The same applies one level up. Once the token itself is trusted, its `genTime` also decides when
+the **signer's** certificate is evaluated, so a signature does not stop verifying the day the
+cédula behind it expires. Only a trusted token does this: an unvalidated `genTime` is a claim by a
+stranger, and letting it pick the day would hand that choice to whoever could alter the file. The
+chain row records which day it used.
+
+⚠️ Revocation checking and `--tsa-ca` together can be stricter than either alone. Revocation data
+is fetched now and applied at the past moment, and a responder that will not answer for a date
+years back fails the chain. Embedding revocation data at signing time is the `-LT` level, which is
+out of scope here.
+
 There is no national list of trusted timestamping authorities to bundle (unlike the national CA),
 so `--tsa-ca` is bring-your-own: supply the CA of whichever TSA you used. Embedding revocation data
 at signing time (the AdES `-LT` / `-LTA` levels, for full archival validation) is out of scope: it is

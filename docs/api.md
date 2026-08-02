@@ -92,6 +92,31 @@ not decay when the responder certificate behind it expires. Without an archive t
 optimistic, knowingly: a self-asserted `gen_time` strictly needs independent proof the token
 existed before that certificate expired, which is the AdES `-LTA` level and is not implemented.
 
+### What a trusted timestamp buys the signature
+
+Once the token itself is trusted, its `gen_time` also decides *when the signing certificate is
+evaluated*. That is the point of a timestamp: a certificate expires and the signature it made does
+not, and the stamp is the evidence that the signature already existed while the certificate was
+still valid.
+
+```python
+report = verify("contract.pdf", ca_file="cas.pem", tsa_ca="tsa.pem")
+# VALID even years after the signer's certificate expired, because the timestamp says when.
+```
+
+Only a **trusted** token moves it. Without `tsa_ca` the `gen_time` is a claim by a stranger, and
+letting it choose the day the certificate is checked on would hand that choice to whoever could
+alter the file. The chain check says which day it used, so a VALID result over an expired
+certificate is never silent about why.
+
+Combining this with `check_revocation=True` is the one combination that can be stricter than
+either alone: revocation data is fetched now and then applied at the past moment, and a responder
+that will not answer for a date years back fails the chain. Carrying revocation data from signing
+time is the AdES `-LT` level, which firmauy does not produce.
+
+> **Changed in 1.13.0:** PDF and detached CMS honour this. Only XAdES did, so the same file could
+> come back VALID as XML and INDETERMINATE as PDF with nothing else different.
+
 > **Changed in 1.12.0:** `timestamp` is new. Before it, PDF and detached CMS discarded the
 > timestamp outcome entirely, so a broken token went unmentioned and the file could still come
 > back `VALID`.

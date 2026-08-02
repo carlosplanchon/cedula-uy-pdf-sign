@@ -22,61 +22,44 @@ from pyhanko_certvalidator import ValidationContext
 
 from firmauy.cert_utils import name_fields, to_asn1_certs
 from firmauy.verify_common import (
+    CHAIN_CHECK,
     TS_PRESENT,
     TS_TRUSTED,
     Check,
-    TimestampInfo,
     VerifyResult,
+    evaluate_timestamp,
+    extract_timestamp_token,
     muted_path_building_warnings,
-    timestamp_gen_time,
+    note_trusted_time,
+    timestamp_imprint_source,
 )
 
 
 
-def _timestamp_of(status, tsa_evaluated: bool):
-    """Turn pyHanko's ``timestamp_validity`` into a (TimestampInfo, Check) pair, or (None, None).
+def _timestamp_of(emb, tsa_trust_roots, tsa_other_certs):
+    """This signature's timestamp, judged first: ``(TimestampInfo, Check, trusted_time)``.
 
-    Both verifiers dropped this object entirely, so a file whose timestamp was broken in every
-    way pyHanko reports still came back with no row about it at all, and silence reads as fine.
+    First, and that ordering is the point. Two later decisions need the answer: which moment to
+    judge the TSA's own certificate at, and, once the token is trusted, which moment to judge the
+    *signer's* certificate at. ``validate_pdf_signature`` takes both as validation contexts, so
+    they have to be built already knowing whether the token holds up.
 
-    ``tsa_evaluated`` says whether TSA trust anchors were supplied. pyHanko returns
-    ``trusted=False`` when it had nothing to validate against, which is not the same claim as
-    "validated and not trusted", so without anchors the trust field stays None.
+    pyHanko reports the same facts on the status it returns, and this deliberately does not read
+    them. Two sources for one answer is how they start to disagree, and this is the one the
+    moments are decided from.
     """
-    validity = getattr(status, "timestamp_validity", None)
-    if validity is None:
-        return None, None
-
-    intact = bool(getattr(validity, "intact", False))
-    valid = bool(getattr(validity, "valid", False))
-    trusted = bool(getattr(validity, "trusted", False)) if tsa_evaluated else None
-    cert = getattr(validity, "signing_cert", None)
-    info = TimestampInfo(
-        present=True,
-        intact=intact,
-        valid=valid,
-        trusted=trusted,
-        gen_time=getattr(validity, "timestamp", None),
-        # pyHanko hands back an asn1crypto certificate here, not a cryptography one, so
-        # cert_utils.get_common_name (which takes the latter) does not apply.
-        tsa_common_name=dict(cert.subject.native).get("common_name", "") if cert else "",
+    token = extract_timestamp_token(emb.signer_info)
+    if token is None:
+        return None, None, None
+    signed_data, gen_time = token
+    return evaluate_timestamp(
+        signed_data, gen_time, timestamp_imprint_source(emb.signer_info),
+        present_name=TS_PRESENT, trusted_name=TS_TRUSTED,
+        tsa_trust_roots=tsa_trust_roots, tsa_other_certs=tsa_other_certs,
     )
 
-    if not (intact and valid):
-        info.detail = "the timestamp token is broken"
-        return info, Check(TS_TRUSTED if tsa_evaluated else TS_PRESENT, False, info.detail)
-    when = info.gen_time.isoformat() if info.gen_time else "unknown time"
-    if not tsa_evaluated:
-        info.detail = f"genTime {when} (asserted by the TSA, not verified)"
-        return info, Check(TS_PRESENT, True, info.detail)
-    if trusted:
-        info.detail = f"genTime {when} (trusted)"
-        return info, Check(TS_TRUSTED, True, info.detail)
-    info.detail = "TSA chain does not reach a trusted root"
-    return info, Check(TS_TRUSTED, False, info.detail)
 
-
-def _map_status(status, trust_evaluated: bool, tsa_evaluated: bool = False) -> VerifyResult:
+def _map_status(status, trust_evaluated: bool, info=None, ts_check=None) -> VerifyResult:
     intact = bool(getattr(status, "intact", False))
     valid = bool(getattr(status, "valid", False))
     trusted = bool(getattr(status, "trusted", False))
@@ -90,8 +73,7 @@ def _map_status(status, trust_evaluated: bool, tsa_evaluated: bool = False) -> V
         Check("coverage (whole file)", cov_ok, cov_name),
     ]
     if trust_evaluated:
-        checks.append(Check("certificate chain to trusted root", trusted,
-                            "" if trusted else "not trusted"))
+        checks.append(Check(CHAIN_CHECK, trusted, "" if trusted else "not trusted"))
 
     cert = getattr(status, "signing_cert", None)
     if cert is not None:
@@ -99,8 +81,6 @@ def _map_status(status, trust_evaluated: bool, tsa_evaluated: bool = False) -> V
         issuer = name_fields(cert.issuer)
     else:
         signer, issuer = {}, {}
-
-    info, ts_check = _timestamp_of(status, tsa_evaluated)
 
     if not (intact and valid):
         indication = "INVALID"
@@ -171,18 +151,24 @@ def verify_pdf(
     `check_revocation=True`, also CRL/OCSP (level 3).
 
     ``tsa_trust_roots`` validates an RFC 3161 signature timestamp's own chain. Without it the
-    timestamp is reported as present and unvalidated rather than as trusted or as broken."""
+    timestamp is reported as present and unvalidated rather than as trusted or as broken. With it,
+    a token that fully validates also fixes *when* the signing certificate is evaluated: at the
+    trusted genTime rather than now, so a signature does not stop verifying the day the signer's
+    certificate expires. That is the whole purpose of a timestamp, and until 1.13.0 only the XAdES
+    verifier honoured it."""
     at = at_time or datetime.now(timezone.utc)
-    if trust_roots:
-        vc = ValidationContext(
+
+    def signer_context(moment):
+        if not trust_roots:
+            return ValidationContext(allow_fetching=False, revocation_mode="soft-fail",
+                                     moment=moment)
+        return ValidationContext(
             trust_roots=to_asn1_certs(trust_roots),
             other_certs=to_asn1_certs(intermediates),
             allow_fetching=check_revocation,
             revocation_mode="hard-fail" if check_revocation else "soft-fail",
-            moment=at,
+            moment=moment,
         )
-    else:
-        vc = ValidationContext(allow_fetching=False, revocation_mode="soft-fail", moment=at)
 
     results = []
     with open(Path(pdf_path), "rb") as f:
@@ -202,11 +188,17 @@ def verify_pdf(
             for emb in sigs:
                 # Per signature, not once for the file: each carries its own token and its own
                 # genTime, and a PDF signed twice months apart would otherwise have the second
-                # signature's TSA judged at the first one's moment.
+                # signature's certificates judged at the first one's moment.
+                info, ts_check, trusted_time = _timestamp_of(
+                    emb, tsa_trust_roots, tsa_other_certs)
                 ts_vc = _tsa_context(tsa_trust_roots, tsa_other_certs,
-                                     timestamp_gen_time(emb.signer_info) or at)
-                status = validate_pdf_signature(emb, vc, ts_vc)
-                result = _map_status(status, bool(trust_roots), bool(tsa_trust_roots))
+                                     (info.gen_time if info else None) or at)
+                # Only a *trusted* token moves the moment. An untrusted genTime is a claim by a
+                # stranger, and letting it choose the day the signing certificate is checked on
+                # would hand that choice to whoever could alter the file.
+                status = validate_pdf_signature(emb, signer_context(trusted_time or at), ts_vc)
+                result = _map_status(status, bool(trust_roots), info, ts_check)
+                note_trusted_time(result.checks, trusted_time)
                 if hybrid:
                     result.checks.append(Check(
                         "hybrid cross-reference sections: validated in relaxed mode", True,

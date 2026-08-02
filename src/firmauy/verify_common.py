@@ -9,6 +9,7 @@ Indication model (mirrors the EU DSS semantics):
 - INVALID:       the signature is broken or the document was modified.
 """
 
+import hashlib
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -69,15 +70,43 @@ class VerifyResult:
 # The unsigned CMS attribute an RFC 3161 signature timestamp travels in (id-aa-timeStampToken).
 _TST_ATTR = "signature_time_stamp_token"
 
+# The row every verifier uses for the signer's own chain, named once so the note below can find it.
+CHAIN_CHECK = "certificate chain to trusted root"
 
-def timestamp_gen_time(signer_info) -> Optional[datetime]:
-    """The genTime a signature-timestamp attribute claims, or None when there is no token.
 
-    Read *before* the token is validated, which is the whole reason this exists. A TSA's
-    certificate has to be evaluated at the moment it says it signed, otherwise the timestamp
-    stops being trusted the day that certificate expires, which is the opposite of what a
-    timestamp is for. Building that validation context means knowing the moment first, and the
-    moment is inside the token.
+def note_trusted_time(checks, trusted_time) -> None:
+    """Record on the chain row that it was judged at the timestamp's moment rather than at now.
+
+    Worth saying out loud. A signature whose certificate expired years ago coming back VALID is
+    surprising unless the row explains which day it was judged on, and somebody auditing the
+    result should not have to infer that from the presence of a timestamp two rows down.
+
+    Only when the chain passed. Under a failure the clause would read as the reason it failed,
+    when the moment is what gave it its best chance.
+
+    A known limitation this row makes visible rather than hides: with revocation checking on, the
+    CRLs and OCSP responses are fetched *now* and then applied at that past moment, and a
+    responder that will not answer for a date years back fails the chain. Carrying revocation data
+    from signing time is the AdES ``-LT`` level, which firmauy does not produce. Combining
+    ``--check-revocation`` with ``--tsa-ca`` is therefore the one combination that can be stricter
+    than either alone.
+    """
+    if trusted_time is None:
+        return
+    suffix = f"evaluated at trusted genTime {trusted_time.isoformat()}"
+    for check in checks:
+        if check.name == CHAIN_CHECK and check.ok:
+            check.detail = f"{check.detail}; {suffix}" if check.detail else suffix
+
+
+def extract_timestamp_token(signer_info) -> Optional[tuple]:
+    """``(SignedData, genTime)`` for a signature timestamp, or None when there is no token.
+
+    Read *before* the token is validated, which is the whole reason this exists. Two later
+    decisions need the genTime and neither can wait for a verdict: the TSA's own certificate has
+    to be judged at the moment it says it signed, and, once the token is trusted, so does the
+    signer's. Building those validation contexts means knowing the moment first, and the moment
+    is inside the token.
 
     Reading a claim is not believing it. Nothing here is trusted: this only decides *when* to
     evaluate, and whether the token holds up at that moment is decided afterwards, by the
@@ -95,11 +124,118 @@ def timestamp_gen_time(signer_info) -> Optional[datetime]:
         for attr in attrs:
             if attr["type"].native != _TST_ATTR:
                 continue
-            token = attr["values"][0]
-            return token["content"]["encap_content_info"]["content"].parsed["gen_time"].native
+            signed_data = attr["values"][0]["content"]
+            gen_time = signed_data["encap_content_info"]["content"].parsed["gen_time"].native
+            return signed_data, gen_time
     except Exception:
         return None
     return None
+
+
+def timestamp_imprint_source(signer_info) -> bytes:
+    """The bytes an RFC 3161 *signature* timestamp is taken over: the signature itself.
+
+    Spelled out rather than borrowed from ``pyhanko.sign.validation.generic_cms``, which has an
+    equivalent helper but not as public API. It is one line, and a private import that moves
+    upstream would take the timestamp row down with it.
+    """
+    return signer_info["signature"].native
+
+
+def validate_timestamp_token(signed_data, imprint_over: bytes, gen_time,
+                             tsa_trust_roots=None, tsa_other_certs=None) -> tuple:
+    """Run pyHanko over an RFC 3161 token: ``(intact, valid, trusted, signing_cert, error)``.
+
+    Three separate questions, kept separate. Collapsing them reports a sound token under the
+    wrong anchor as broken, which sends a reader to inspect the file when the problem is in the
+    anchors they passed. ``intact`` is the messageImprint binding, ``valid`` the token's own
+    signature, ``trusted`` its chain, and only the third depends on anchors.
+
+    ``trusted`` is None without anchors, because nothing was put to any anchor. The other two are
+    answered either way: they are properties of the token, not of who vouches for it.
+
+    ``imprint_over`` is whatever the messageImprint covers, which differs by format: the
+    canonicalized ``<ds:SignatureValue>`` for XAdES, the raw signature bytes for PDF and CMS.
+    Everything after that point is identical, which is why it lives here.
+    """
+    import asyncio
+
+    from pyhanko.sign.validation.generic_cms import validate_tst_signed_data
+    from pyhanko.sign.validation.status import TimestampSignatureStatus
+    from pyhanko_certvalidator import ValidationContext
+
+    from firmauy.cert_utils import to_asn1_certs
+
+    def imprint(hash_algo: str) -> bytes:
+        return hashlib.new(hash_algo, imprint_over).digest()
+
+    try:
+        vc = ValidationContext(
+            # An explicit empty list, not None: None means the operating system's trust store, and
+            # a TSA that happens to be in it would then be judged against anchors the caller never
+            # supplied. Whatever it decides about trust is discarded below anyway.
+            trust_roots=to_asn1_certs(tsa_trust_roots) if tsa_trust_roots else [],
+            other_certs=to_asn1_certs(tsa_other_certs),
+            allow_fetching=False,
+            revocation_mode="soft-fail",
+            moment=gen_time,   # validate the TSA certificate at the time it claims to have signed
+        )
+        with muted_path_building_warnings():
+            kwargs = asyncio.run(validate_tst_signed_data(signed_data, vc, imprint))
+        status = TimestampSignatureStatus(**kwargs)
+    except Exception as exc:
+        return False, False, None, None, f"TSA validation error: {str(exc)[:80]}"
+
+    trusted = bool(status.trusted) if tsa_trust_roots else None
+    return (bool(status.intact), bool(status.valid), trusted,
+            getattr(status, "signing_cert", None), None)
+
+
+def evaluate_timestamp(signed_data, gen_time, imprint_over: bytes, *, present_name: str,
+                       trusted_name: str, tsa_trust_roots=None, tsa_other_certs=None) -> tuple:
+    """``(TimestampInfo, Check, trusted_time)`` for a token that was found and parsed.
+
+    One implementation for all three formats. The check *names* differ (XAdES says "XAdES-T" in
+    its pair, and changing a released check's wording is not free), so they come in as arguments;
+    everything else about judging a timestamp is the same question regardless of what the file
+    around it looks like.
+
+    ``trusted_time`` is the genTime, and only when the token fully validated. It is what a caller
+    evaluates the *signing* certificate at, so it must not be handed back on anything less: an
+    untrusted token's date is a claim by a stranger, and treating it as proof would let whoever
+    could alter the file choose which day their certificate was checked on.
+    """
+    name = trusted_name if tsa_trust_roots else present_name
+    intact, valid, trusted, cert, error = validate_timestamp_token(
+        signed_data, imprint_over, gen_time, tsa_trust_roots, tsa_other_certs)
+
+    info = TimestampInfo(
+        present=True, intact=intact, valid=valid, trusted=trusted, gen_time=gen_time,
+        # pyHanko hands back an asn1crypto certificate here, not a cryptography one, so
+        # cert_utils.get_common_name (which takes the latter) does not apply.
+        tsa_common_name=dict(cert.subject.native).get("common_name", "") if cert else "",
+    )
+
+    if error is not None:
+        info.detail = error
+        return info, Check(name, False, error), None
+    if intact and valid and trusted:
+        info.detail = f"genTime {gen_time.isoformat()} (trusted)"
+        return info, Check(name, True, info.detail), gen_time
+    if intact and valid and trusted is None:
+        info.detail = f"genTime {gen_time.isoformat()} (asserted by the TSA, not verified)"
+        return info, Check(name, True, info.detail), None
+
+    # One reason, the most fundamental one that applies. A token that does not bind to this
+    # signature is not this signature's timestamp at all, so that is worth saying before anything
+    # about who issued it.
+    if not intact:
+        info.detail = "timestamp does not match the signature value"
+    elif not valid:
+        info.detail = "timestamp token signature is invalid"
+    else:
+        info.detail = "TSA chain does not reach a trusted root"
+    return info, Check(name, False, info.detail), None
 
 
 # pyHanko logs a full traceback at WARNING when it cannot build a trust path during CMS or

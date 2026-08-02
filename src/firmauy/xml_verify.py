@@ -16,7 +16,6 @@ canonicalize exactly like signing, so there is a single source of truth.
 """
 
 import base64
-import hashlib
 import re
 from datetime import datetime, timezone
 from typing import Optional
@@ -27,7 +26,14 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from lxml import etree
 
 from firmauy.cert_utils import name_fields, to_asn1_cert, to_asn1_certs
-from firmauy.verify_common import Check, TimestampInfo, VerifyResult, muted_path_building_warnings
+from firmauy.verify_common import (
+    CHAIN_CHECK,
+    Check,
+    TimestampInfo,
+    VerifyResult,
+    evaluate_timestamp,
+    note_trusted_time,
+)
 from firmauy.xml_sign import (
     SIGNED_PROPS_TYPE,
     _c14n,
@@ -127,75 +133,15 @@ def _verify_timestamp(sig, tsa_trust_roots=None, tsa_other_certs=None) -> Option
         return (Check(name, False, detail), None,
                 TimestampInfo(present=True, intact=False, valid=False, detail=detail))
 
-    intact, valid, trusted, error = _validate_token(
-        signed_data, sv, gen_time, tsa_trust_roots, tsa_other_certs)
-
-    info = TimestampInfo(present=True, intact=intact, valid=valid, trusted=trusted,
-                         gen_time=gen_time)
-    if error is not None:
-        info.detail = error
-        return Check(name, False, error), None, info
-
-    if intact and valid and trusted:
-        info.detail = f"genTime {gen_time.isoformat()} (trusted)"
-        return Check(name, True, info.detail), gen_time, info
-    if intact and valid and trusted is None:
-        info.detail = f"genTime {gen_time.isoformat()} (asserted by the TSA, not verified)"
-        return Check(name, True, info.detail), None, info
-
-    # One reason, the most fundamental one that applies. A token that does not bind to this
-    # signature is not this signature's timestamp at all, so that is worth saying before anything
-    # about who issued it.
-    if not intact:
-        info.detail = "timestamp does not match the signature value"
-    elif not valid:
-        info.detail = "timestamp token signature is invalid"
-    else:
-        info.detail = "TSA certificate does not chain to the --tsa-ca anchor(s)"
-    return Check(name, False, info.detail), None, info
-
-
-def _validate_token(signed_data, sv, gen_time, tsa_trust_roots, tsa_other_certs) -> tuple:
-    """Run pyHanko over the RFC 3161 token: ``(intact, valid, trusted, error)``.
-
-    Three separate questions, kept separate. Collapsing them is what made a sound token under the
-    wrong anchor report as broken, which sent a reader looking at the file when the problem was
-    in their own ``--tsa-ca``. ``intact`` is the messageImprint binding, ``valid`` the token's own
-    signature, ``trusted`` its chain, and only the third depends on anchors.
-
-    ``trusted`` is None without anchors, because nothing was put to any anchor. The other two are
-    answered either way: they are properties of the token, not of who vouches for it, and until
-    1.12.1 this path checked only the binding and then reported the token's signature as valid on
-    that basis, which said verified about something nobody had verified.
-    """
-    import asyncio
-
-    from pyhanko.sign.validation.generic_cms import validate_tst_signed_data
-    from pyhanko.sign.validation.status import TimestampSignatureStatus
-    from pyhanko_certvalidator import ValidationContext
-
-    def imprint(hash_algo: str) -> bytes:
-        return hashlib.new(hash_algo, _c14n(sv)).digest()
-
-    try:
-        vc = ValidationContext(
-            # An explicit empty list, not None: None means the operating system's trust store, and
-            # a TSA that happens to be in it would then be judged against anchors the caller never
-            # supplied. Whatever it decides about trust is discarded below anyway.
-            trust_roots=to_asn1_certs(tsa_trust_roots) if tsa_trust_roots else [],
-            other_certs=to_asn1_certs(tsa_other_certs),
-            allow_fetching=False,
-            revocation_mode="soft-fail",
-            moment=gen_time,   # validate the TSA certificate at the time it claims to have signed
-        )
-        with muted_path_building_warnings():
-            kwargs = asyncio.run(validate_tst_signed_data(signed_data, vc, imprint))
-        status = TimestampSignatureStatus(**kwargs)
-    except Exception as exc:
-        return False, False, None, f"TSA validation error: {str(exc)[:80]}"
-
-    trusted = bool(status.trusted) if tsa_trust_roots else None
-    return bool(status.intact), bool(status.valid), trusted, None
+    # The shared judgement, so all three formats answer this the same way and in the same words.
+    # What differs here is only what the messageImprint covers: the canonicalized
+    # <ds:SignatureValue> element, where PDF and CMS use the raw signature bytes.
+    info, check, trusted_time = evaluate_timestamp(
+        signed_data, gen_time, _c14n(sv),
+        present_name=TS_CHECK_NAME, trusted_name=TS_CHECK_NAME_TRUSTED,
+        tsa_trust_roots=tsa_trust_roots, tsa_other_certs=tsa_other_certs,
+    )
+    return check, trusted_time, info
 
 
 def verify_xml(
@@ -326,9 +272,8 @@ def _verify_signature(
     if level1_ok and trust_roots:
         at = trusted_time or at_time or datetime.now(timezone.utc)
         ok, detail = _verify_chain(cert, intermediates or [], trust_roots, at, check_revocation)
-        if ok and trusted_time is not None:
-            detail = f"{detail}; evaluated at trusted genTime {trusted_time.isoformat()}"
-        checks.append(Check("certificate chain to trusted root", ok, detail))
+        checks.append(Check(CHAIN_CHECK, ok, detail))
+        note_trusted_time(checks, trusted_time)
         trusted = ok
 
     if not level1_ok:
