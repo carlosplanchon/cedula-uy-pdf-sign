@@ -484,7 +484,7 @@ firmauy verify sig.p7s --original /path/to/document   # or point at the original
 
 A PDF and an XML are self-contained, so a single argument is enough. A detached `.p7s` also
 needs its original file: by default the `<x>.p7s` → `<x>` name is used, or pass `--original`.
-The same `--no-trust`, `--check-revocation`, `--tsa-ca` (XAdES-T XML only), `--json`,
+The same `--no-trust`, `--check-revocation`, `--tsa-ca`, `--json`,
 `--json-pretty` and `--redact` options apply (all detailed in
 [Common verification options and output](#common-verification-options-and-output)). The specific
 commands below remain available (clearer for scripts that know the format).
@@ -523,8 +523,13 @@ not verified. Pass `--tsa-ca <tsa-bundle.pem>` (the timestamping authority's cer
 validate the RFC 3161 token: on success the timestamp counts as **trusted time** and the signing
 certificate is evaluated **at that time** instead of now, so a signature stays VALID even after the
 signer's certificate later expires. There is no national TSA list to bundle, so this is
-bring-your-own. PDF/CMS timestamps are validated through `--ca-file` instead. See
-[docs/trust-anchors.md](trust-anchors.md).
+bring-your-own. See [docs/trust-anchors.md](trust-anchors.md).
+
+> **Changed in 1.12.0:** `--tsa-ca` now applies to PDF and detached CMS as well, and before that
+> it was accepted and silently ignored on those two. The old advice here was to point `--ca-file`
+> at the TSA instead, which was worse than a dead option: `--ca-file` decides who may have
+> *signed* the document, so widening it to get a timestamp validated widens who is trusted to
+> sign.
 
 What it checks (XAdES): the `SignedInfo` signature, each reference digest (so any change to the
 document is detected), the XAdES signing-certificate binding, and the certificate chain to a trusted
@@ -557,11 +562,36 @@ The `signer` and `issuer` fields are structured:
               "country": "UY", "certificate_serial": "..."},
    "issuer": {"common_name": "Autoridad Certificadora del Ministerio del Interior",
               "serial_number": null, "organization": "Ministerio del Interior", "country": "UY"},
+   "timestamp": null,
    "checks": [{"name": "...", "ok": true, "detail": ""}]}]}
 ```
 
 On a hard error (e.g. malformed input), stdout is `{"schema_version": 2, "error": "..."}` and the
 exit code is `1`.
+
+**The timestamp block.** `timestamp` is `null` when the signature carries none, which is the
+common case: the standard cédula flow signs at the BES level. When there is one it is an object,
+and reading it is how a consumer finds out whether the stamp held without parsing the wording of
+a check row:
+
+```json
+"timestamp": {"present": true, "intact": true, "valid": true, "trusted": null,
+              "gen_time": "2026-07-30T14:32:11+00:00", "tsa_common_name": "...",
+              "detail": "genTime 2026-07-30T14:32:11+00:00 (asserted by the TSA, not verified)"}
+```
+
+`gen_time` is an ISO 8601 instant in UTC, as RFC 3161 requires. `trusted` is three-valued and is
+`null` unless `--tsa-ca` supplied anchors for the TSA's own chain, which now works for all three
+formats: without anchors the chain is never looked at, and `false` would be the different claim
+that it was looked at and did not reach a trusted root. A consumer that reads `null` as false
+reports a problem nobody went looking for. A broken token holds the indication at `INDETERMINATE`.
+Nothing inside this block is redacted by `--redact`: it names the timestamping authority, not the
+signer.
+
+> **New in 1.12.0:** the `timestamp` block. `schema_version` stays at `2`: a key that was never
+> there cannot break a consumer reading the keys it already knows, and the check list was always
+> documented as varying per format. PDF and detached CMS also gained the two timestamp check rows
+> that XAdES already had, having previously dropped the outcome entirely.
 
 Two modifiers (also valid on the human output):
 
@@ -602,6 +632,7 @@ Example output of `firmauy verify-pdf signed.pdf --json-pretty` (names fictitiou
         "country": "UY"
       },
       "trusted": true,
+      "timestamp": null,
       "checks": [
         {"name": "signature intact (covered bytes unmodified)", "ok": true, "detail": ""},
         {"name": "signature cryptographically valid", "ok": true, "detail": ""},
@@ -615,7 +646,9 @@ Example output of `firmauy verify-pdf signed.pdf --json-pretty` (names fictitiou
 
 With `--redact`, the top-level `"redacted"` becomes `true`, the `signer` block above becomes
 `"common_name": "[REDACTED]"`, `"serial_number": "[REDACTED]"`, `"certificate_serial": "[REDACTED]"`,
-and each check `detail` becomes `"[REDACTED]"`. The issuer and the check names/results are unchanged.
+and each check `detail` becomes `"[REDACTED]"`. The issuer, the check names/results and the
+`timestamp` block are unchanged: the timestamp says when a signature existed and names the
+timestamping authority, none of which is about the cardholder.
 The top-level `"redacted"` flag is present (as `false` by default) on the result record of every
 command that supports `--redact` (`verify-*`, `list-certs`, `fetch-identity`, `fetch-photo`), so a
 consumer can detect a redacted record uniformly. The verify hard-error envelope

@@ -46,6 +46,42 @@ report = verify("data.bin.p7s", original="data.bin")
 Returns a `VerifyReport(indication, signatures)`, where each signature is a
 `firmauy.verify_common.VerifyResult`.
 
+### The signature timestamp
+
+`sig.timestamp` is a `firmauy.verify_common.TimestampInfo` when the signature carries an RFC 3161
+timestamp, and `None` when it does not. Read it rather than searching the check rows: the rows are
+display, and their wording differs per format.
+
+```python
+ts = report.signatures[0].timestamp
+if ts and ts.intact and ts.valid:
+    print(ts.gen_time, ts.tsa_common_name)
+```
+
+| Field | Meaning |
+|---|---|
+| `present` | the signature carries a timestamp token |
+| `intact` | the token's own signature is unbroken |
+| `valid` | ...and cryptographically correct |
+| `trusted` | the TSA chain reached a trusted root |
+| `gen_time` | the instant the TSA asserts, a `datetime` in UTC |
+| `tsa_common_name` | the timestamping authority's common name, when the token names one |
+| `detail` | why, when something is not `True` |
+
+The three flags are declared as `Optional[bool]`, where `None` means *not evaluated*: neither a
+pass nor a failure. In practice `trusted` is the one that uses it, and it is `None` by default,
+whenever no `tsa_ca` anchors were passed to `verify()`. Without anchors the token's chain is never
+looked at, so reporting `False` would claim a check was made and failed. Treat `None` as "unknown"
+rather than as falsy: `bool(None)` collapses "nobody looked" into "looked and it failed".
+
+A timestamp says *when* a signature existed, which is a separate question from whether the
+signature is valid. A document can carry a sound signature and a broken timestamp, and that needs
+two verdicts rather than one. A broken token holds the overall indication at `INDETERMINATE`.
+
+> **Changed in 1.12.0:** `timestamp` is new. Before it, PDF and detached CMS discarded the
+> timestamp outcome entirely, so a broken token went unmentioned and the file could still come
+> back `VALID`.
+
 ## Sign a file
 
 `sign_file()` signs a file with the cédula, producing a detached CAdES-BES `.p7s`. The original file

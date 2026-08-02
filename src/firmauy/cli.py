@@ -1625,7 +1625,13 @@ def _emit_verify(results: list, json_output: bool, pretty: bool = False, redact:
 
         {"schema_version": 2, "redacted": false, "indication": "...", "signatures": [
             {"indication", "signer": {...}, "issuer": {...}, "trusted",
+             "timestamp": {...} | null,
              "checks": [{"name","ok","detail"}]}]}
+
+    ``timestamp`` is new in 1.12.0 and the schema version stays at 2 on purpose: a key that was
+    never there cannot break a consumer reading the keys it already knows, and the check rows
+    were always documented as varying per format. Bumping the version would have forced every
+    consumer to look at a change that does not affect them.
     """
     overall = max((r.indication for r in results), key=lambda ind: _INDICATION_RANK[ind])
     if json_output:
