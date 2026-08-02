@@ -61,26 +61,45 @@ if ts and ts.intact and ts.valid:
 | Field | Meaning |
 |---|---|
 | `present` | the signature carries a timestamp token |
-| `intact` | the token's own signature is unbroken |
-| `valid` | ...and cryptographically correct |
-| `trusted` | the TSA chain reached a trusted root |
+| `intact` | the token is unmodified and its messageImprint binds it to this signature |
+| `valid` | the TSA's signature over the token verifies |
+| `trusted` | the TSA's certificate chained to an anchor supplied via `tsa_ca` |
 | `gen_time` | the instant the TSA asserts, a `datetime` in UTC |
 | `tsa_common_name` | the timestamping authority's common name, when the token names one |
 | `detail` | why, when something is not `True` |
 
-The three flags are declared as `Optional[bool]`, where `None` means *not evaluated*: neither a
-pass nor a failure. In practice `trusted` is the one that uses it, and it is `None` by default,
-whenever no `tsa_ca` anchors were passed to `verify()`. Without anchors the token's chain is never
-looked at, so reporting `False` would claim a check was made and failed. Treat `None` as "unknown"
-rather than as falsy: `bool(None)` collapses "nobody looked" into "looked and it failed".
+Three separate questions, and worth reading separately. A token can be perfectly sound and still
+not chain to the anchors you passed, which says something about your `tsa_ca` and nothing about
+the file. Only `trusted` depends on anchors; the other two are properties of the token itself and
+are answered either way.
+
+The flags are declared as `Optional[bool]`, where `None` means *not evaluated*: neither a pass nor
+a failure. In practice `trusted` is the one that uses it, and it is `None` by default, whenever no
+`tsa_ca` anchors were passed to `verify()`. Without anchors the chain is never looked at, so
+reporting `False` would claim a check was made and failed. Treat `None` as "unknown" rather than as
+falsy: `bool(None)` collapses "nobody looked" into "looked and it failed".
+
+`gen_time` is reported whenever the token states one, including when the chain did not validate.
+The date is the answer this object exists to carry, and losing it because the anchors were wrong
+would throw away the part that was never in question.
 
 A timestamp says *when* a signature existed, which is a separate question from whether the
 signature is valid. A document can carry a sound signature and a broken timestamp, and that needs
 two verdicts rather than one. A broken token holds the overall indication at `INDETERMINATE`.
 
+The TSA's certificate is evaluated at `gen_time` rather than at verification time, so a stamp does
+not decay when the responder certificate behind it expires. Without an archive timestamp this is
+optimistic, knowingly: a self-asserted `gen_time` strictly needs independent proof the token
+existed before that certificate expired, which is the AdES `-LTA` level and is not implemented.
+
 > **Changed in 1.12.0:** `timestamp` is new. Before it, PDF and detached CMS discarded the
 > timestamp outcome entirely, so a broken token went unmentioned and the file could still come
 > back `VALID`.
+>
+> **Changed in 1.12.1:** for XAdES, `intact` and `valid` used to be one boolean under two names,
+> so a sound token under the wrong anchor reported `intact=False, valid=False` with no `gen_time`,
+> which reads as a destroyed token rather than a mismatched anchor. That path also reported
+> `valid=True` on the strength of the binding alone, without verifying the token's signature.
 
 ## Sign a file
 

@@ -385,3 +385,160 @@ def test_a_sound_timestamp_does_not_hold_anything_back():
                            signing_cert=None)
     for module in (pdf, cms):
         assert module._map_status(_status_with(good), True, True).indication == "VALID"
+
+
+# --- a real broken token, produced by editing the file ------------------------
+#
+# The helper above says a genuinely corrupted timestamp cannot be produced by editing a PDF or a
+# .p7s, because tampering would break the signature first. That is wrong, and the reason is the
+# whole point of the attribute: a signature timestamp lives in the SignerInfo's **unsigned**
+# attributes, which by construction are not covered by the signature. So the token can be
+# rewritten while the signature over the document stays perfectly intact, which is exactly the
+# case a verifier has to survive, and the one an attacker gets for free.
+
+def _tamper_with_the_token(p7s: bytes) -> bytes:
+    """Corrupt the timestamp token inside a .p7s, leaving everything else byte-identical."""
+    from asn1crypto import cms as asn1cms
+    from asn1crypto import core as asn1core
+
+    content_info = asn1cms.ContentInfo.load(p7s)
+    signer_info = content_info["content"]["signer_infos"][0]
+    for attr in signer_info["unsigned_attrs"]:
+        if attr["type"].native != "signature_time_stamp_token":
+            continue
+        token = attr["values"][0]
+        tst_signer = token["content"]["signer_infos"][0]
+        # Flip one byte of the token's own signature. Nothing else moves: the imprint still
+        # matches, the TSA certificate is still there, and only the token's signature is a lie.
+        broken = bytearray(tst_signer["signature"].native)
+        broken[0] ^= 0xFF
+        tst_signer["signature"] = asn1core.OctetString(bytes(broken))
+        return content_info.dump(force=True)
+    raise AssertionError("the .p7s carries no timestamp token to tamper with")
+
+
+def test_tampering_with_the_unsigned_timestamp_attribute_leaves_the_signature_intact():
+    """The premise of the test below, checked rather than assumed. If tampering broke the
+    signature, the interesting branch would be unreachable and a hand-built status would be the
+    only way to test it, which is what this file used to believe."""
+    _tsa_cert, timestamper = _timestamper()
+    p7s, _cert = _signed_p7s(timestamper)
+
+    result = verify_cms(io.BytesIO(DATA), _tamper_with_the_token(p7s))
+
+    assert [c for c in result.checks if c.name == "signature intact (signed bytes unmodified)"][0].ok
+    assert [c for c in result.checks if c.name == "signature cryptographically valid"][0].ok
+
+
+def test_a_tampered_timestamp_token_is_reported_as_broken():
+    tsa_cert, timestamper = _timestamper()
+    p7s, _cert = _signed_p7s(timestamper)
+    anchors = [x509.load_pem_x509_certificate(_pem(tsa_cert))]
+
+    result = verify_cms(io.BytesIO(DATA), _tamper_with_the_token(p7s), tsa_trust_roots=anchors)
+
+    assert result.timestamp.present is True
+    assert result.timestamp.valid is False
+    rows = _timestamp_checks(result)
+    assert rows and rows[0].ok is False
+
+
+def test_a_tampered_timestamp_holds_the_verdict_at_indeterminate():
+    """Not INVALID: the signature over the document is untouched and saying otherwise would
+    accuse the wrong thing. Not VALID either, which is what this returned before 1.12.0."""
+    tsa_cert, timestamper = _timestamper()
+    p7s, signer_cert = _signed_p7s(timestamper)
+    anchors = [x509.load_pem_x509_certificate(_pem(tsa_cert))]
+
+    result = verify_cms(io.BytesIO(DATA), _tamper_with_the_token(p7s),
+                        trust_roots=[x509.load_pem_x509_certificate(_pem(signer_cert))],
+                        tsa_trust_roots=anchors)
+
+    assert result.indication == "INDETERMINATE"
+
+
+# --- the TSA is judged when it signed, not when we happen to look --------------
+
+def _tsa_chain(leaf_days: int):
+    """A long-lived TSA root and a responder certificate that expires in ``leaf_days``.
+
+    Two levels on purpose. A self-signed TSA used as its own anchor proves nothing here: a trust
+    anchor's own validity period is not checked during path validation, so the certificate could
+    be expired for a century and still validate. Real TSAs look like this anyway, and the
+    responder certificate is the short-lived part.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    root_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    root_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "TSA Root CA")])
+    root = (x509.CertificateBuilder().subject_name(root_name).issuer_name(root_name)
+            .public_key(root_key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=3650))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .add_extension(x509.KeyUsage(
+                digital_signature=False, content_commitment=False, key_encipherment=False,
+                data_encipherment=False, key_agreement=False, key_cert_sign=True,
+                crl_sign=True, encipher_only=False, decipher_only=False), critical=True)
+            .sign(root_key, hashes.SHA256()))
+
+    leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    leaf_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "TSA Responder")])
+    leaf = (x509.CertificateBuilder().subject_name(leaf_name).issuer_name(root_name)
+            .public_key(leaf_key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=leaf_days))
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.TIME_STAMPING]), critical=True)
+            .add_extension(x509.KeyUsage(
+                digital_signature=True, content_commitment=False, key_encipherment=False,
+                data_encipherment=False, key_agreement=False, key_cert_sign=False,
+                crl_sign=False, encipher_only=False, decipher_only=False), critical=True)
+            .sign(root_key, hashes.SHA256()))
+
+    a_cert, a_key = _asn1(leaf_key, leaf)
+    return root, DummyTimeStamper(a_cert, a_key, certs_to_embed=SimpleCertificateStore())
+
+
+def test_a_pdf_timestamp_is_judged_at_gentime_and_not_at_verification_time(tmp_path):
+    """The stamp does not decay. A TSA responder certificate is short-lived by design and the
+    documents it stamps are not, so judging it at verification time means every timestamp turns
+    untrusted on a schedule, which is the one thing a timestamp exists to prevent.
+
+    Until 1.12.1 this is what PAdES and CAdES did, while their own docstrings claimed otherwise
+    and XAdES did it right."""
+    root, timestamper = _tsa_chain(leaf_days=1)      # the responder expires tomorrow
+    path, _cert = _signed_pdf(tmp_path, timestamper)
+    long_after = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)
+
+    now = verify_pdf(path, tsa_trust_roots=[root])[0]
+    later = verify_pdf(path, tsa_trust_roots=[root], at_time=long_after)[0]
+
+    assert now.timestamp.trusted is True
+    assert later.timestamp.trusted is True, "the same token stopped being trusted with time"
+    assert later.timestamp.gen_time == now.timestamp.gen_time
+
+
+def test_a_p7s_timestamp_is_judged_at_gentime_and_not_at_verification_time():
+    root, timestamper = _tsa_chain(leaf_days=1)
+    p7s, _cert = _signed_p7s(timestamper)
+    long_after = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)
+
+    now = verify_cms(io.BytesIO(DATA), p7s, tsa_trust_roots=[root])
+    later = verify_cms(io.BytesIO(DATA), p7s, tsa_trust_roots=[root], at_time=long_after)
+
+    assert now.timestamp.trusted is True
+    assert later.timestamp.trusted is True, "the same token stopped being trusted with time"
+
+
+def test_a_stamp_from_an_expired_responder_is_still_not_trusted_under_the_wrong_root(tmp_path):
+    """Judging at genTime is not the same as trusting anything that claims an old date. The
+    anchors still decide; the moment only decides when they are applied."""
+    root, timestamper = _tsa_chain(leaf_days=1)
+    _other_root, _other_ts = _tsa_chain(leaf_days=1)
+    path, _cert = _signed_pdf(tmp_path, timestamper)
+    long_after = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)
+
+    result = verify_pdf(path, tsa_trust_roots=[_other_root], at_time=long_after)[0]
+
+    assert result.timestamp.trusted is False
+    assert root is not _other_root

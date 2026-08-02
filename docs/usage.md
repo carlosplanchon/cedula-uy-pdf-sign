@@ -517,19 +517,29 @@ firmauy verify-xml signed.xml --tsa-ca tsa-ca.pem
 firmauy verify-xml signed.xml --json
 ```
 
-**Trusted timestamps and long-term validation (XAdES-T).** By default a XAdES-T timestamp is only
-checked to *bind* to the signature. Its TSA is not validated, so the `genTime` is shown as asserted,
-not verified. Pass `--tsa-ca <tsa-bundle.pem>` (the timestamping authority's certificate) to
-validate the RFC 3161 token: on success the timestamp counts as **trusted time** and the signing
+**Trusted timestamps and long-term validation (XAdES-T).** By default a timestamp is checked to be
+intact, to carry a valid signature of its own, and to *bind* to the signature it travels with. Its
+TSA is not validated, so the `genTime` is shown as asserted, not verified. Pass
+`--tsa-ca <tsa-bundle.pem>` (the timestamping authority's certificate) to validate the RFC 3161
+token's chain: on success the timestamp counts as **trusted time** and, for XAdES-T, the signing
 certificate is evaluated **at that time** instead of now, so a signature stays VALID even after the
 signer's certificate later expires. There is no national TSA list to bundle, so this is
 bring-your-own. See [docs/trust-anchors.md](trust-anchors.md).
 
-> **Changed in 1.12.0:** `--tsa-ca` now applies to PDF and detached CMS as well, and before that
-> it was accepted and silently ignored on those two. The old advice here was to point `--ca-file`
-> at the TSA instead, which was worse than a dead option: `--ca-file` decides who may have
-> *signed* the document, so widening it to get a timestamp validated widens who is trusted to
-> sign.
+The TSA's own certificate is evaluated at the token's `genTime`, so a stamp does not stop being
+trusted when the responder certificate behind it expires, which for a short-lived responder would
+otherwise happen within a year or two of signing.
+
+> **Changed in 1.12.0:** `--tsa-ca` reached the PDF and detached CMS verifiers, where it had been
+> accepted and silently ignored. The old advice here was to point `--ca-file` at the TSA instead,
+> which was worse than a dead option: `--ca-file` decides who may have *signed* the document, so
+> widening it to get a timestamp validated widens who is trusted to sign.
+>
+> **Changed in 1.12.1:** the option reached `verify-pdf` and `verify-any` too, which had been left
+> without it while the documentation said every verify command shared it. PDF and CMS now evaluate
+> the TSA at the `genTime` rather than at verification time, which is what XAdES already did and
+> what their own docstrings already claimed, so the same token no longer flips from trusted to
+> untrusted with nothing about the file having changed.
 
 What it checks (XAdES): the `SignedInfo` signature, each reference digest (so any change to the
 document is detected), the XAdES signing-certificate binding, and the certificate chain to a trusted

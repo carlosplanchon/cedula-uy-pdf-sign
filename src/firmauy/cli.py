@@ -1763,6 +1763,8 @@ def verify_pdf_cmd(
         False, "--check-revocation",
         help="Also check certificate revocation via CRL/OCSP. Requires network.",
     ),
+    tsa_ca: Optional[Path] = typer.Option(
+        None, "--tsa-ca", exists=True, readable=True, dir_okay=False, help=_TSA_CA_OPT_HELP),
     json_output: bool = typer.Option(False, "--json", help=_JSON_OPT_HELP),
     json_pretty: bool = typer.Option(False, "--json-pretty", help=_JSON_PRETTY_OPT_HELP),
     redact: bool = typer.Option(False, "--redact", help=_REDACT_OPT_HELP),
@@ -1779,12 +1781,15 @@ def verify_pdf_cmd(
             raise RuntimeError("--check-revocation requires the certificate chain; remove --no-trust.")
 
         roots, intermediates = _resolve_trust_anchors(ca_file, no_trust, notify=_warn)
+        tsa_roots, tsa_others = _resolve_tsa_anchors(tsa_ca)
 
         results = verify_pdf(
             input_pdf,
             trust_roots=roots,
             intermediates=intermediates,
             check_revocation=check_revocation,
+            tsa_trust_roots=tsa_roots,
+            tsa_other_certs=tsa_others,
         )
 
         overall = _emit_verify(results, json_output, pretty=json_pretty, redact=redact)
@@ -1821,6 +1826,8 @@ def verify_any_cmd(
         False, "--check-revocation",
         help="Also check certificate revocation via CRL/OCSP. Requires network.",
     ),
+    tsa_ca: Optional[Path] = typer.Option(
+        None, "--tsa-ca", exists=True, readable=True, dir_okay=False, help=_TSA_CA_OPT_HELP),
     json_output: bool = typer.Option(False, "--json", help=_JSON_OPT_HELP),
     json_pretty: bool = typer.Option(False, "--json-pretty", help=_JSON_PRETTY_OPT_HELP),
     redact: bool = typer.Option(False, "--redact", help=_REDACT_OPT_HELP),
@@ -1845,6 +1852,7 @@ def verify_any_cmd(
             )
 
         roots, intermediates = _resolve_trust_anchors(ca_file, no_trust, notify=_warn)
+        tsa_roots, tsa_others = _resolve_tsa_anchors(tsa_ca)
 
         # Stream the (possibly large) signed file instead of loading it into memory; only the
         # small detached signature is read whole.
@@ -1855,6 +1863,8 @@ def verify_any_cmd(
                 trust_roots=roots,
                 intermediates=intermediates,
                 check_revocation=check_revocation,
+                tsa_trust_roots=tsa_roots,
+                tsa_other_certs=tsa_others,
             )
 
         overall = _emit_verify([result], json_output, pretty=json_pretty, redact=redact)

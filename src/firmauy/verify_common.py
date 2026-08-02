@@ -66,6 +66,42 @@ class VerifyResult:
     timestamp: Optional[TimestampInfo] = None
 
 
+# The unsigned CMS attribute an RFC 3161 signature timestamp travels in (id-aa-timeStampToken).
+_TST_ATTR = "signature_time_stamp_token"
+
+
+def timestamp_gen_time(signer_info) -> Optional[datetime]:
+    """The genTime a signature-timestamp attribute claims, or None when there is no token.
+
+    Read *before* the token is validated, which is the whole reason this exists. A TSA's
+    certificate has to be evaluated at the moment it says it signed, otherwise the timestamp
+    stops being trusted the day that certificate expires, which is the opposite of what a
+    timestamp is for. Building that validation context means knowing the moment first, and the
+    moment is inside the token.
+
+    Reading a claim is not believing it. Nothing here is trusted: this only decides *when* to
+    evaluate, and whether the token holds up at that moment is decided afterwards, by the
+    validation this time is used to set up. A forged genTime buys nothing on its own, because a
+    token that does not chain to the supplied anchors fails regardless of which moment it is
+    judged at.
+
+    Anything unparseable reads as absent. A token too broken to state a time has nothing to say
+    about when the file was signed, and the validation that follows is what reports it as broken.
+    """
+    try:
+        attrs = signer_info["unsigned_attrs"]
+        if not attrs:
+            return None
+        for attr in attrs:
+            if attr["type"].native != _TST_ATTR:
+                continue
+            token = attr["values"][0]
+            return token["content"]["encap_content_info"]["content"].parsed["gen_time"].native
+    except Exception:
+        return None
+    return None
+
+
 # pyHanko logs a full traceback at WARNING when it cannot build a trust path during CMS or
 # PDF validation (both go through ``pyhanko.sign.validation.generic_cms``). That is an
 # *expected* outcome: no trust anchors (--no-trust / no cached CAs) or a chain that does not

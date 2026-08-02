@@ -214,3 +214,103 @@ def test_a_xades_timestamp_is_reported_as_data_too():
 def test_a_xades_bes_signature_carries_no_timestamp_info():
     result = verify_xml(_sign())[0]
     assert result.timestamp is None
+
+
+# --- three questions, kept apart ----------------------------------------------
+#
+# Integrity, validity and trust are separate properties and only the third depends on --tsa-ca.
+# Until 1.12.1 this path answered all three with the one boolean the check row carried, so a
+# sound token under the wrong anchor came back looking destroyed. That reading sends somebody to
+# inspect a file when the problem is in the anchors they passed.
+
+def _sound_token_under(anchor_for):
+    """A signature whose timestamp is perfectly fine, verified against ``anchor_for(other)``."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    signer_ca, signer_leaf, signer_key = _ca_and_leaf(
+        "PEREZ JUAN", leaf_not_before=now - datetime.timedelta(days=1),
+        leaf_not_after=now + datetime.timedelta(days=365))
+    tsa_ca, tsa_leaf, tsa_key = _ca_and_leaf(
+        "MY TSA", leaf_not_before=now - datetime.timedelta(days=1),
+        leaf_not_after=now + datetime.timedelta(days=365), timestamping=True)
+    other_ca, _leaf, _key = _ca_and_leaf(
+        "OTHER", leaf_not_before=now - datetime.timedelta(days=1),
+        leaf_not_after=now + datetime.timedelta(days=365), timestamping=True)
+    signed = _signed_with_tsa(signer_leaf, signer_key, tsa_leaf, tsa_key, tsa_ca, now)
+    return verify_xml(signed, trust_roots=[signer_ca],
+                      tsa_trust_roots=[anchor_for(tsa_ca, other_ca)])[0]
+
+
+def test_a_sound_token_under_the_wrong_anchor_is_not_called_broken():
+    ts = _sound_token_under(lambda right, wrong: wrong).timestamp
+
+    assert ts.intact is True, "a token that binds correctly was reported as not intact"
+    assert ts.valid is True, "a token with a good signature was reported as invalid"
+    assert ts.trusted is False, "the anchor is wrong, and that is the one thing that failed"
+
+
+def test_the_gen_time_survives_a_chain_that_did_not_validate():
+    """The date is what the row exists to report, and losing it is losing the answer. It used to
+    be recovered by re-reading it out of the check's own wording, which only worked when the
+    wording happened to contain it, so any failure erased the time along with the trust."""
+    ts = _sound_token_under(lambda right, wrong: wrong).timestamp
+
+    assert ts.gen_time is not None
+    assert ts.gen_time.tzinfo is not None
+
+
+def test_the_right_anchor_still_answers_all_three_yes():
+    ts = _sound_token_under(lambda right, wrong: right).timestamp
+
+    assert (ts.intact, ts.valid, ts.trusted) == (True, True, True)
+
+
+def test_without_anchors_the_token_signature_is_still_checked():
+    """Without --tsa-ca the chain cannot be judged, but the token's own signature can, and saying
+    ``valid`` about something nobody verified is the same mistake as saying ``trusted``. This path
+    used to check only the messageImprint binding and then report the signature as valid on that
+    basis, so a token with a corrupt signature and a matching imprint passed."""
+    signed = _sign(_dummy_timestamper())
+    ts = verify_xml(signed)[0].timestamp
+
+    assert ts.intact is True
+    assert ts.valid is True        # actually checked now, not inferred from the binding
+    assert ts.trusted is None      # and this one genuinely was not looked at
+
+
+def _forge_the_token_signature(signed: bytes) -> bytes:
+    """Rewrite the token's own signature, leaving its messageImprint binding untouched.
+
+    Different from flipping a base64 character, which corrupts the DER and makes the token
+    unparseable. Here the token stays structurally perfect and still points at this signature.
+    Only the TSA's signature over it is a forgery, which is the case a binding-only check cannot
+    see.
+    """
+    import base64 as b64
+    import re as _re
+
+    from asn1crypto import cms as a_cms
+    from asn1crypto import core as a_core
+
+    match = _re.search(rb"<[^>]*EncapsulatedTimeStamp[^>]*>([^<]+)<", signed)
+    assert match, "no EncapsulatedTimeStamp to forge"
+    token = a_cms.ContentInfo.load(b64.b64decode(_re.sub(rb"\s+", b"", match.group(1))))
+    tst_signer = token["content"]["signer_infos"][0]
+    forged = bytearray(tst_signer["signature"].native)
+    forged[0] ^= 0xFF
+    tst_signer["signature"] = a_core.OctetString(bytes(forged))
+    return signed.replace(match.group(1), b64.b64encode(token.dump(force=True)))
+
+
+def test_a_forged_token_signature_is_caught_without_any_anchors():
+    ts = verify_xml(_forge_the_token_signature(_sign(_dummy_timestamper())))[0].timestamp
+
+    assert ts.present is True
+    assert ts.valid is False, "a forged token signature passed a binding-only check"
+
+
+def test_a_forged_token_does_not_make_the_signature_invalid():
+    """The timestamp is an unsigned property. Forging it must not accuse the document."""
+    result = verify_xml(_forge_the_token_signature(_sign(_dummy_timestamper())))[0]
+
+    assert result.indication == "INDETERMINATE"
+    assert _check(result, "SignedInfo signature (RSA-SHA256)").ok

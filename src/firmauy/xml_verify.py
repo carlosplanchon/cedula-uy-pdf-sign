@@ -92,86 +92,82 @@ TS_CHECK_NAME = "signature timestamp present (XAdES-T, TSA not trust-validated)"
 TS_CHECK_NAME_TRUSTED = "signature timestamp (XAdES-T, TSA chain validated)"
 
 
-def _timestamp_info(check, trusted_time, tsa_evaluated: bool) -> TimestampInfo:
-    """The XAdES timestamp outcome in the shape the other two verifiers return.
-
-    Built from what this module already worked out rather than re-derived: the check carries
-    whether the token parsed and bound, and ``trusted_time`` is non-None only when the TSA chain
-    validated. As everywhere, ``trusted`` stays None when no anchors were supplied, because not
-    having looked is not the same as having looked and found nothing.
-    """
-    return TimestampInfo(
-        present=True,
-        intact=check.ok,
-        valid=check.ok,
-        trusted=(trusted_time is not None) if tsa_evaluated else None,
-        gen_time=trusted_time or _gen_time_from(check.detail),
-        detail=check.detail,
-    )
-
-
-def _gen_time_from(detail: str) -> Optional[datetime]:
-    """Pull the genTime back out of the check's own wording when the TSA was not validated.
-
-    Ugly, and deliberately contained here: the untrusted branch formats the time into its detail
-    and does not otherwise return it, and changing that would change a released check's text.
-    """
-    match = re.search(r"genTime (\S+)", detail or "")
-    if not match:
-        return None
-    try:
-        return datetime.fromisoformat(match.group(1))
-    except ValueError:
-        return None
-
-
 def _verify_timestamp(sig, tsa_trust_roots=None, tsa_other_certs=None) -> Optional[tuple]:
-    """Verify a XAdES-T <SignatureTimeStamp>, returning ``(Check, trusted_time)``; None when the
-    signature carries no timestamp.
+    """Verify a XAdES-T <SignatureTimeStamp>, returning ``(Check, trusted_time, TimestampInfo)``;
+    None when the signature carries no timestamp.
 
-    Always checks that the RFC 3161 token *binds* to this signature (its messageImprint equals the
-    digest of the canonicalized <ds:SignatureValue>).
+    The token's SignedData is validated either way (its own signature, and the messageImprint
+    against the digest of the canonicalized <ds:SignatureValue>). What ``--tsa-ca`` adds is the
+    chain: with anchors the TSA certificate is validated against them, with the timeStamping EKU,
+    at the genTime. On success the genTime counts as trusted time and comes back as
+    ``trusted_time``, so the caller can evaluate the signing certificate at that moment
+    (long-term validation).
 
-    Without ``tsa_trust_roots`` the TSA certificate is NOT validated, so the genTime is only what
-    the (unverified) TSA asserts and ``trusted_time`` is None: an attacker able to alter the file
-    could substitute a token from any TSA with an arbitrary genTime and still pass the binding.
-
-    With ``tsa_trust_roots`` (from --tsa-ca) the token's SignedData is fully validated via pyHanko
-    (token signature + messageImprint + TSA chain with the timeStamping EKU). On success the genTime
-    is trusted and returned as ``trusted_time``, so the caller can evaluate the signing certificate
-    at that time (long-term validation)."""
+    Without anchors ``trusted_time`` is None and the genTime is only what an unvalidated TSA
+    asserts: whoever could alter the file could substitute a token from any TSA carrying any
+    genTime and still pass the binding. Saying so is what TS_CHECK_NAME is for.
+    """
     from asn1crypto import cms as asn1cms
 
     ets = sig.find(f".//{_xades('SignatureTimeStamp')}/{_xades('EncapsulatedTimeStamp')}")
     if ets is None or not ets.text:
         return None
 
+    name = TS_CHECK_NAME_TRUSTED if tsa_trust_roots else TS_CHECK_NAME
     sv = sig.find(_ds("SignatureValue"))
     try:
         token_der = base64.b64decode(re.sub(r"\s+", "", ets.text))
         signed_data = asn1cms.ContentInfo.load(token_der)["content"]
         tst_info = signed_data["encap_content_info"]["content"].parsed
-        mi = tst_info["message_imprint"]
-        algo = mi["hash_algorithm"]["algorithm"].native
-        expected = hashlib.new(algo, _c14n(sv)).digest()
         gen_time = tst_info["gen_time"].native
     except Exception as exc:
-        return Check(TS_CHECK_NAME, False, f"could not parse timestamp: {str(exc)[:80]}"), None
+        detail = f"could not parse timestamp: {str(exc)[:80]}"
+        # No gen_time: a token this broken never got to state one. trusted stays None because
+        # nothing was ever put to the anchors, which is true whether or not anchors were given.
+        return (Check(name, False, detail), None,
+                TimestampInfo(present=True, intact=False, valid=False, detail=detail))
 
-    if tsa_trust_roots:
-        return _validate_tsa_token(signed_data, sv, gen_time, tsa_trust_roots, tsa_other_certs)
+    intact, valid, trusted, error = _validate_token(
+        signed_data, sv, gen_time, tsa_trust_roots, tsa_other_certs)
 
-    # No --tsa-ca: binding only, and honest that the TSA was not validated.
-    if mi["hashed_message"].native == expected:
-        return Check(TS_CHECK_NAME, True,
-                     f"genTime {gen_time.isoformat()} (asserted by the TSA, not verified)"), None
-    return Check(TS_CHECK_NAME, False, "timestamp does not match the signature value"), None
+    info = TimestampInfo(present=True, intact=intact, valid=valid, trusted=trusted,
+                         gen_time=gen_time)
+    if error is not None:
+        info.detail = error
+        return Check(name, False, error), None, info
+
+    if intact and valid and trusted:
+        info.detail = f"genTime {gen_time.isoformat()} (trusted)"
+        return Check(name, True, info.detail), gen_time, info
+    if intact and valid and trusted is None:
+        info.detail = f"genTime {gen_time.isoformat()} (asserted by the TSA, not verified)"
+        return Check(name, True, info.detail), None, info
+
+    # One reason, the most fundamental one that applies. A token that does not bind to this
+    # signature is not this signature's timestamp at all, so that is worth saying before anything
+    # about who issued it.
+    if not intact:
+        info.detail = "timestamp does not match the signature value"
+    elif not valid:
+        info.detail = "timestamp token signature is invalid"
+    else:
+        info.detail = "TSA certificate does not chain to the --tsa-ca anchor(s)"
+    return Check(name, False, info.detail), None, info
 
 
-def _validate_tsa_token(signed_data, sv, gen_time, tsa_trust_roots, tsa_other_certs) -> tuple:
-    """Validate an RFC 3161 token against the --tsa-ca anchors via pyHanko's
-    ``validate_tst_signed_data`` (token signature + messageImprint + TSA chain). Returns
-    ``(Check, trusted_time)``; ``trusted_time`` is the genTime only when fully trusted."""
+def _validate_token(signed_data, sv, gen_time, tsa_trust_roots, tsa_other_certs) -> tuple:
+    """Run pyHanko over the RFC 3161 token: ``(intact, valid, trusted, error)``.
+
+    Three separate questions, kept separate. Collapsing them is what made a sound token under the
+    wrong anchor report as broken, which sent a reader looking at the file when the problem was
+    in their own ``--tsa-ca``. ``intact`` is the messageImprint binding, ``valid`` the token's own
+    signature, ``trusted`` its chain, and only the third depends on anchors.
+
+    ``trusted`` is None without anchors, because nothing was put to any anchor. The other two are
+    answered either way: they are properties of the token, not of who vouches for it, and until
+    1.12.1 this path checked only the binding and then reported the token's signature as valid on
+    that basis, which said verified about something nobody had verified.
+    """
     import asyncio
 
     from pyhanko.sign.validation.generic_cms import validate_tst_signed_data
@@ -183,7 +179,10 @@ def _validate_tsa_token(signed_data, sv, gen_time, tsa_trust_roots, tsa_other_ce
 
     try:
         vc = ValidationContext(
-            trust_roots=to_asn1_certs(tsa_trust_roots),
+            # An explicit empty list, not None: None means the operating system's trust store, and
+            # a TSA that happens to be in it would then be judged against anchors the caller never
+            # supplied. Whatever it decides about trust is discarded below anyway.
+            trust_roots=to_asn1_certs(tsa_trust_roots) if tsa_trust_roots else [],
             other_certs=to_asn1_certs(tsa_other_certs),
             allow_fetching=False,
             revocation_mode="soft-fail",
@@ -193,17 +192,10 @@ def _validate_tsa_token(signed_data, sv, gen_time, tsa_trust_roots, tsa_other_ce
             kwargs = asyncio.run(validate_tst_signed_data(signed_data, vc, imprint))
         status = TimestampSignatureStatus(**kwargs)
     except Exception as exc:
-        return Check(TS_CHECK_NAME_TRUSTED, False, f"TSA validation error: {str(exc)[:80]}"), None
+        return False, False, None, f"TSA validation error: {str(exc)[:80]}"
 
-    if status.intact and status.valid and status.trusted:
-        return Check(TS_CHECK_NAME_TRUSTED, True, f"genTime {gen_time.isoformat()} (trusted)"), gen_time
-    if not status.intact:
-        reason = "timestamp does not match the signature value"
-    elif not status.valid:
-        reason = "timestamp token signature is invalid"
-    else:
-        reason = "TSA certificate does not chain to the --tsa-ca anchor(s)"
-    return Check(TS_CHECK_NAME_TRUSTED, False, reason), None
+    trusted = bool(status.trusted) if tsa_trust_roots else None
+    return bool(status.intact), bool(status.valid), trusted, None
 
 
 def verify_xml(
@@ -320,12 +312,11 @@ def _verify_signature(
     trusted_time = None
     timestamp = None
     if ts_result is not None:
-        ts_check, trusted_time = ts_result
-        checks.append(ts_check)
-        timestamp_ok = ts_check.ok
         # The same structure the PDF and CMS verifiers return, so a consumer can read one field
         # instead of knowing which format it is holding and which check names that format uses.
-        timestamp = _timestamp_info(ts_check, trusted_time, bool(tsa_trust_roots))
+        ts_check, trusted_time, timestamp = ts_result
+        checks.append(ts_check)
+        timestamp_ok = ts_check.ok
     else:
         timestamp_ok = True
 

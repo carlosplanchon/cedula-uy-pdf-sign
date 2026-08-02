@@ -93,15 +93,27 @@ A basic (BES) signature carries no trusted timestamp, so certificate validity an
 evaluated **at verification time**, not at signing time. A timestamp (PAdES-T / XAdES-T / CAdES-T,
 added with `--tsa-url`) provides independent trusted-time evidence of when the signature existed.
 
-On the verification side, that evidence is only as good as the timestamp's own validation. For PDF
-(PAdES-T) and CMS (CAdES-T), pyHanko checks the embedded timestamp against the active trust
-anchors, so it counts as trusted time only when the TSA's CA is among them (e.g. supplied via
-`--ca-file`). For XML (XAdES-T), `firmauy verify-xml` confirms by default only that the timestamp
-**binds to the signature**; it does **not** validate the TSA's certificate, so the reported
-`genTime` is what the (unverified) TSA asserts. Pass **`--tsa-ca <tsa-bundle.pem>`** to validate the
-RFC 3161 token against the timestamping authority's certificate: on success the `genTime` becomes
-trusted and the signing certificate is then evaluated **at that time** instead of now (long-term
+On the verification side, that evidence is only as good as the timestamp's own validation, and
+this works the same way in all three formats. By default firmauy confirms that the token is
+intact, that its own signature is valid and that it **binds to the signature** it travels with,
+but it does **not** validate the TSA's certificate, so the reported `genTime` is only what an
+unverified TSA asserts. Pass **`--tsa-ca <tsa-bundle.pem>`** to validate the RFC 3161 token
+against the timestamping authority's certificate. On success the `genTime` becomes trusted, and
+for XAdES-T the signing certificate is then evaluated **at that time** instead of now (long-term
 validation), so a signature stays VALID even after the signer's certificate later expires.
+
+`--tsa-ca` is kept separate from `--ca-file` on purpose, and pointing the latter at a timestamping
+authority is not a substitute: `--ca-file` decides who is accepted as having **signed the
+document**, so widening it to get a stamp validated widens who may sign. This page used to
+recommend exactly that for PDF and CMS. It was wrong, and until 1.12.0 `--tsa-ca` was silently
+ignored on those two formats, which is why the advice existed.
+
+The TSA's certificate is evaluated at the token's `genTime`, not at verification time. A responder
+certificate is short-lived and the documents it stamps are not, so judging it now would make every
+timestamp turn untrusted the day that certificate expires, which is the one thing a timestamp
+exists to prevent. That is optimistic without an archive timestamp (the AdES `-LTA` level, not
+implemented): strictly, a self-asserted `genTime` needs independent proof the token existed before
+the certificate expired.
 
 There is no national list of trusted timestamping authorities to bundle (unlike the national CA),
 so `--tsa-ca` is bring-your-own: supply the CA of whichever TSA you used. Embedding revocation data

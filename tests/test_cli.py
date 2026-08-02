@@ -602,6 +602,75 @@ def test_verify_tsa_ca_is_no_longer_refused_for_a_pdf(tmp_path):
     assert "--ca-file" not in result.output
 
 
+def test_every_verify_command_accepts_tsa_ca():
+    """1.12.0 wired --tsa-ca through the verifiers and the auto-detecting `verify`, but left the
+    per-format commands without the option, so the documentation promised something two of the
+    four commands could not do. A person who knows their file is a PDF reaches for verify-pdf.
+    """
+    for command in ("verify", "verify-xml", "verify-pdf", "verify-any"):
+        out = runner.invoke(app, [command, "--help"]).output
+        assert "--tsa-ca" in out, f"{command} does not offer --tsa-ca"
+
+
+def test_verify_pdf_actually_uses_the_tsa_anchors(tmp_path, monkeypatch):
+    """The option existing is not the option working: the wiring is the part that was missing
+    everywhere else, and an accepted-and-ignored flag is worse than no flag."""
+    import firmauy.cli as cli
+
+    seen = {}
+
+    def _spy(path, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(cli, "verify_pdf", _spy)
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n")
+    tsaca = tmp_path / "tsa.pem"
+    tsaca.write_bytes(_ANCHOR_PEM)
+
+    runner.invoke(app, ["verify-pdf", str(pdf), "--tsa-ca", str(tsaca), "--no-trust"])
+
+    assert seen.get("tsa_trust_roots"), "verify-pdf accepted --tsa-ca and dropped it"
+
+
+def test_verify_any_actually_uses_the_tsa_anchors(tmp_path, monkeypatch):
+    import firmauy.cli as cli
+
+    seen = {}
+
+    def _spy(data, p7s, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(cli, "verify_cms", _spy)
+    original = tmp_path / "documento.bin"
+    original.write_bytes(b"contenido")
+    (tmp_path / "documento.bin.p7s").write_bytes(b"no importa")
+    tsaca = tmp_path / "tsa.pem"
+    tsaca.write_bytes(_ANCHOR_PEM)
+
+    runner.invoke(app, ["verify-any", str(original), "--tsa-ca", str(tsaca), "--no-trust"])
+
+    assert seen.get("tsa_trust_roots"), "verify-any accepted --tsa-ca and dropped it"
+
+
+def _make_anchor_pem() -> bytes:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "TSA CA")])
+    cert = (
+        x509.CertificateBuilder().subject_name(name).issuer_name(name)
+        .public_key(key.public_key()).serial_number(1)
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=365)).sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM)
+
+
+_ANCHOR_PEM = _make_anchor_pem()
+
+
 def test_resolve_tsa_anchors(tmp_path):
     from firmauy.cli import _resolve_tsa_anchors
 

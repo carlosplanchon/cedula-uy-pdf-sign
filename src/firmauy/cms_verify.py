@@ -30,6 +30,7 @@ from firmauy.verify_common import (
     TimestampInfo,
     VerifyResult,
     muted_path_building_warnings,
+    timestamp_gen_time,
 )
 
 
@@ -139,9 +140,18 @@ def _tsa_context(tsa_trust_roots, tsa_other_certs, at):
     quietly widen that, which is a security change and not a convenience. pyHanko takes the two
     contexts as separate arguments for this reason.
 
-    The moment is the TSA's own genTime rather than now, so a token whose responder certificate
-    has since expired still validates as of when it was issued, which is the point of a
-    timestamp.
+    ``at`` is the token's own genTime, supplied by the caller, and not the verification time. A
+    TSA responder certificate is short-lived by design and the documents it stamps are not, so
+    judging it now means every timestamp turns untrusted the day that certificate expires, which
+    is the one thing a timestamp exists to prevent. This is what XAdES already did; PAdES and
+    CAdES judged at ``at_time`` until 1.12.1, so the same token flipped from trusted to untrusted
+    with nothing about the file having changed.
+
+    Optimistic without an archive timestamp, and knowingly so: a genTime is self-asserted, so
+    strictly this needs proof the token existed before the certificate expired, which only a
+    later timestamp can give (the AdES -LTA level, out of scope here). The exposure is a TSA key
+    compromised after expiry, which is a smaller problem than every -T signature decaying on a
+    schedule.
     """
     if not tsa_trust_roots:
         return None
@@ -186,7 +196,10 @@ def verify_cms(
             moment=at,
         )
 
-    ts_vc = _tsa_context(tsa_trust_roots, tsa_other_certs, at)
+    # The TSA is judged at the moment the token claims, not at ``at``. See _tsa_context.
+    signer_infos = signed_data["signer_infos"]
+    gen_time = timestamp_gen_time(signer_infos[0]) if len(signer_infos) else None
+    ts_vc = _tsa_context(tsa_trust_roots, tsa_other_certs, gen_time or at)
     with muted_path_building_warnings():
         status = asyncio.run(
             async_validate_detached_cms(input_data, signed_data, signer_validation_context=vc,
