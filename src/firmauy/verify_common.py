@@ -148,7 +148,19 @@ def extract_timestamp_token(signer_info) -> Optional[tuple]:
         return None
     try:
         signed_data = attr["values"][0]["content"]
-        return signed_data, signed_data["encap_content_info"]["content"].parsed["gen_time"].native
+        tst_info = signed_data["encap_content_info"]["content"].parsed
+        # ``.native`` on the whole TSTInfo, not just on gen_time, and that is the entire point.
+        # asn1crypto parses lazily: reading one field leaves its siblings untouched, so a token
+        # whose messageImprint algorithm is damaged hands back a perfectly good genTime here and
+        # then raises later, inside pyHanko, out of a public function. Forcing the parse now moves
+        # every structural failure to the one place that is prepared for it.
+        tst_info.native
+        # Structurally sound is not the same as usable. The messageImprint can name a hash nobody
+        # implements, in which case the OID parses perfectly and the digest cannot be computed, so
+        # validation raises later for a token this function already looked at and approved. Doing
+        # the same lookup that will be needed anyway turns that into the answer it should be.
+        hashlib.new(tst_info["message_imprint"]["hash_algorithm"]["algorithm"].native)
+        return signed_data, tst_info["gen_time"].native
     except Exception as exc:
         raise MalformedTimestamp(f"{type(exc).__name__}: {str(exc).splitlines()[0][:80]}") from exc
 

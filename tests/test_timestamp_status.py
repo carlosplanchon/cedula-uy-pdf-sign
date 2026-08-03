@@ -774,3 +774,83 @@ def test_a_stamp_from_an_expired_responder_is_still_not_trusted_under_the_wrong_
 
     assert result.timestamp.trusted is False
     assert root is not _other_root
+
+
+# --- damage that only shows up later --------------------------------------------
+#
+# Both of these were found by sweeping every bit of a real TSTInfo and asserting that no mutation
+# escapes as an exception. 1.13.1 already claimed to have closed that, and had closed only the
+# shape of it that happens to fail on the first field anyone reads.
+
+_SHA256_OID_DER = bytes.fromhex("0609608648016503040201")
+
+
+def _tstinfo_span(p7s: bytes) -> tuple:
+    """Where this file's TSTInfo lives, as ``(offset, length)``."""
+    from asn1crypto import cms as a_cms
+
+    si = a_cms.ContentInfo.load(p7s)["content"]["signer_infos"][0]
+    for attr in si["unsigned_attrs"]:
+        if attr["type"].native == "signature_time_stamp_token":
+            der = attr["values"][0]["content"]["encap_content_info"]["content"].contents
+            at = p7s.find(der)
+            assert at >= 0, "could not locate the TSTInfo"
+            return at, len(der)
+    raise AssertionError("no timestamp token")
+
+
+def _rewrite_in_tstinfo(p7s: bytes, old: bytes, new: bytes) -> bytes:
+    """Replace bytes inside the TSTInfo only, keeping every length in the file the same."""
+    assert len(old) == len(new)
+    at, length = _tstinfo_span(p7s)
+    region = p7s[at:at + length]
+    assert region.count(old) == 1, "the bytes to rewrite are not uniquely inside the TSTInfo"
+    return p7s[:at] + region.replace(old, new) + p7s[at + length:]
+
+
+def test_damage_beyond_the_first_field_read_is_still_caught(tmp_path):
+    """asn1crypto parses lazily, so reading genTime leaves its siblings untouched.
+
+    A token whose messageImprint algorithm is structurally broken therefore handed back a
+    perfectly good genTime, was accepted, and then raised inside pyHanko, out of a public
+    function. Here the OBJECT IDENTIFIER tag is destroyed, which nothing notices until somebody
+    reads that field.
+    """
+    _tsa, timestamper = _timestamper()
+    p7s, _cert = _signed_p7s(timestamper)
+    broken = _rewrite_in_tstinfo(p7s, _SHA256_OID_DER, b"\x07" + _SHA256_OID_DER[1:])
+
+    result = verify_cms(io.BytesIO(DATA), broken)      # must not raise
+
+    assert result.indication == "INDETERMINATE"
+    assert result.timestamp.present is True
+    assert not (result.timestamp.intact and result.timestamp.valid)
+
+
+def test_a_hash_nobody_implements_is_an_answer_and_not_a_crash():
+    """Structurally sound is not the same as usable. The OID parses perfectly and names a digest
+    that does not exist, so the imprint cannot be computed and validation used to raise for a
+    token that had already been looked at and approved."""
+    _tsa, timestamper = _timestamper()
+    p7s, _cert = _signed_p7s(timestamper)
+    # Same length, still a well-formed OID, and no such algorithm.
+    broken = _rewrite_in_tstinfo(p7s, _SHA256_OID_DER, _SHA256_OID_DER[:-1] + b"\x41")
+
+    result = verify_cms(io.BytesIO(DATA), broken)      # must not raise
+
+    assert result.indication == "INDETERMINATE"
+    assert result.timestamp.present is True
+    assert "could not parse timestamp" in result.timestamp.detail
+
+
+def test_neither_kind_of_damage_touches_the_signature_itself():
+    """The whole reason the attribute can be dropped: it is unsigned, so wrecking it says nothing
+    about the document. A person whose signature is fine still gets told so."""
+    _tsa, timestamper = _timestamper()
+    p7s, signer_cert = _signed_p7s(timestamper)
+    anchors = [x509.load_pem_x509_certificate(_pem(signer_cert))]
+
+    for new in (b"\x07" + _SHA256_OID_DER[1:], _SHA256_OID_DER[:-1] + b"\x41"):
+        result = verify_cms(io.BytesIO(DATA), _rewrite_in_tstinfo(p7s, _SHA256_OID_DER, new),
+                            trust_roots=anchors)
+        assert all(c.ok for c in result.checks if "timestamp" not in c.name), new.hex()
