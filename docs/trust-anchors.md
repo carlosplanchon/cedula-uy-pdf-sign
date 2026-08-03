@@ -99,8 +99,10 @@ intact, that its own signature is valid and that it **binds to the signature** i
 but it does **not** validate the TSA's certificate, so the reported `genTime` is only what an
 unverified TSA asserts. Pass **`--tsa-ca <tsa-bundle.pem>`** to validate the RFC 3161 token
 against the timestamping authority's certificate. On success the `genTime` becomes trusted, and
-for XAdES-T the signing certificate is then evaluated **at that time** instead of now (long-term
-validation), so a signature stays VALID even after the signer's certificate later expires.
+the signing certificate is then evaluated **at that time** instead of now, in every format, so a
+signature stays VALID even after the signer's certificate later expires. That is validation at
+the sealed time, and not the AdES `-LT` / `-LTA` levels: no historical revocation evidence is
+embedded at signing or consulted at verification.
 
 `--tsa-ca` is kept separate from `--ca-file` on purpose, and pointing the latter at a timestamping
 authority is not a substitute: `--ca-file` decides who is accepted as having **signed the

@@ -23,40 +23,13 @@ from pyhanko_certvalidator import ValidationContext
 from firmauy.cert_utils import name_fields, to_asn1_certs
 from firmauy.verify_common import (
     CHAIN_CHECK,
-    TS_PRESENT,
-    TS_TRUSTED,
     Check,
     VerifyResult,
-    evaluate_timestamp,
-    extract_timestamp_token,
     muted_path_building_warnings,
     note_trusted_time,
-    timestamp_imprint_source,
+    timestamp_of,
 )
 
-
-
-def _timestamp_of(emb, tsa_trust_roots, tsa_other_certs):
-    """This signature's timestamp, judged first: ``(TimestampInfo, Check, trusted_time)``.
-
-    First, and that ordering is the point. Two later decisions need the answer: which moment to
-    judge the TSA's own certificate at, and, once the token is trusted, which moment to judge the
-    *signer's* certificate at. ``validate_pdf_signature`` takes both as validation contexts, so
-    they have to be built already knowing whether the token holds up.
-
-    pyHanko reports the same facts on the status it returns, and this deliberately does not read
-    them. Two sources for one answer is how they start to disagree, and this is the one the
-    moments are decided from.
-    """
-    token = extract_timestamp_token(emb.signer_info)
-    if token is None:
-        return None, None, None
-    signed_data, gen_time = token
-    return evaluate_timestamp(
-        signed_data, gen_time, timestamp_imprint_source(emb.signer_info),
-        present_name=TS_PRESENT, trusted_name=TS_TRUSTED,
-        tsa_trust_roots=tsa_trust_roots, tsa_other_certs=tsa_other_certs,
-    )
 
 
 def _map_status(status, trust_evaluated: bool, info=None, ts_check=None) -> VerifyResult:
@@ -189,8 +162,8 @@ def verify_pdf(
                 # Per signature, not once for the file: each carries its own token and its own
                 # genTime, and a PDF signed twice months apart would otherwise have the second
                 # signature's certificates judged at the first one's moment.
-                info, ts_check, trusted_time = _timestamp_of(
-                    emb, tsa_trust_roots, tsa_other_certs)
+                info, ts_check, trusted_time = timestamp_of(
+                    emb.signer_info, tsa_trust_roots, tsa_other_certs)
                 ts_vc = _tsa_context(tsa_trust_roots, tsa_other_certs,
                                      (info.gen_time if info else None) or at)
                 # Only a *trusted* token moves the moment. An untrusted genTime is a claim by a

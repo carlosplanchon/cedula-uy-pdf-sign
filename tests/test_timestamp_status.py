@@ -395,6 +395,96 @@ def test_a_tampered_timestamp_holds_the_verdict_at_indeterminate():
     assert result.indication == "INDETERMINATE"
 
 
+def _wreck_the_tstinfo(raw: bytes, der: bytes, *, hexed: bool = False) -> bytes:
+    """Break the TSTInfo's SEQUENCE tag, leaving every length in the file alone.
+
+    A step past flipping the token's signature: this one the parser cannot even read. The
+    attribute is still unsigned, so the file around it is untouched, and a verifier has to answer
+    for the signature anyway.
+    """
+    needle = der.hex().upper().encode() if hexed else der
+    at = raw.find(needle)
+    assert at >= 0, "could not find the TSTInfo"
+    data = bytearray(raw)
+    if hexed:                       # "30" -> "31": SEQUENCE becomes SET
+        data[at], data[at + 1] = ord("3"), ord("1")
+    else:
+        data[at] = 0x31
+    return bytes(data)
+
+
+def _tstinfo_der(signer_info) -> bytes:
+    for attr in signer_info["unsigned_attrs"]:
+        if attr["type"].native == "signature_time_stamp_token":
+            return attr["values"][0]["content"]["encap_content_info"]["content"].contents
+    raise AssertionError("no timestamp token")
+
+
+def test_an_unreadable_token_does_not_take_the_whole_result_down():
+    """A malformed TSTInfo used to raise straight out of verify_cms.
+
+    ``extract_timestamp_token`` reported it as *absent*, which left the attribute in place for
+    pyHanko to parse a second time, and the ValueError escaped a public function. Absent and
+    unreadable are different answers and only one of them is true here.
+    """
+    from asn1crypto import cms as a_cms
+
+    _tsa, timestamper = _timestamper()
+    p7s, _cert = _signed_p7s(timestamper)
+    si = a_cms.ContentInfo.load(p7s)["content"]["signer_infos"][0]
+    broken = _wreck_the_tstinfo(p7s, _tstinfo_der(si))
+
+    result = verify_cms(io.BytesIO(DATA), broken)      # must not raise
+
+    assert result.timestamp.present is True, "an unreadable token is not an absent one"
+    assert result.timestamp.valid is False
+    assert result.timestamp.gen_time is None
+    assert result.indication == "INDETERMINATE"
+
+
+def test_an_unreadable_token_does_not_take_a_pdf_down_either(tmp_path):
+    _tsa, timestamper = _timestamper()
+    path, _cert = _signed_pdf(tmp_path, timestamper)
+    with open(path, "rb") as f:
+        der = _tstinfo_der(list(PdfFileReader(f).embedded_signatures)[0].signer_info)
+    broken = tmp_path / "roto.pdf"
+    broken.write_bytes(_wreck_the_tstinfo(path.read_bytes(), der, hexed=True))
+
+    result = verify_pdf(broken)[0]                     # must not raise
+
+    assert result.timestamp.present is True
+    assert result.timestamp.valid is False
+    assert result.indication == "INDETERMINATE"
+
+
+def test_an_unreadable_token_still_lets_the_signature_be_judged():
+    """The reason the attribute is dropped rather than the result abandoned. It is unsigned, so
+    it says nothing about the document, and a person whose signature is fine deserves to be told
+    so even when somebody wrecked the timestamp stapled to it."""
+    from asn1crypto import cms as a_cms
+
+    _tsa, timestamper = _timestamper()
+    p7s, signer_cert = _signed_p7s(timestamper)
+    si = a_cms.ContentInfo.load(p7s)["content"]["signer_infos"][0]
+    broken = _wreck_the_tstinfo(p7s, _tstinfo_der(si))
+
+    result = verify_cms(io.BytesIO(DATA), broken,
+                        trust_roots=[x509.load_pem_x509_certificate(_pem(signer_cert))])
+
+    assert all(c.ok for c in result.checks if "timestamp" not in c.name), \
+        "a broken timestamp took the signature's own verdict with it"
+
+
+def test_a_file_with_no_timestamp_is_still_reported_as_having_none():
+    """The other side of the same distinction, so the fix cannot drift into calling everything
+    present."""
+    p7s, _cert = _signed_p7s()
+
+    result = verify_cms(io.BytesIO(DATA), p7s)
+
+    assert result.timestamp is None
+
+
 def _tamper_with_the_pdf_token(path) -> bytes:
     """The same edit, inside a PDF.
 

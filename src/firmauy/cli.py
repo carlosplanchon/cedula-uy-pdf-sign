@@ -1670,8 +1670,10 @@ _REDACT_OPT_HELP = (
 )
 _TSA_CA_OPT_HELP = (
     "PEM bundle of the trusted timestamping authority's certificate(s), for a PDF, a XAdES-T XML "
-    "or a detached .p7s. When given, the timestamp's own chain is validated and, for XAdES-T, the "
-    "signing certificate is then evaluated at the trusted timestamp time (long-term validation). "
+    "or a detached .p7s. When given, the timestamp's own chain is validated and the signing "
+    "certificate is then evaluated at the sealed time rather than now, in every format. That is "
+    "validation at the sealed time, not the AdES -LT/-LTA levels: no historical revocation "
+    "evidence is embedded or consulted. "
     "Without it a timestamp is reported as present and unvalidated, which is neither trusted nor "
     "broken. Kept separate from --ca-file on purpose: those anchors decide who is accepted as "
     "having signed the document, and a timestamping authority has no business widening that."

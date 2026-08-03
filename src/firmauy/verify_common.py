@@ -12,6 +12,8 @@ Indication model (mirrors the EU DSS semantics):
 import hashlib
 import logging
 from contextlib import contextmanager
+
+from asn1crypto import cms
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
@@ -99,8 +101,35 @@ def note_trusted_time(checks, trusted_time) -> None:
             check.detail = f"{check.detail}; {suffix}" if check.detail else suffix
 
 
+class MalformedTimestamp(Exception):
+    """A signature timestamp attribute is there, and it cannot be read.
+
+    A distinct outcome from having no timestamp, and treating the two alike is what let a
+    malformed ``TSTInfo`` crash the verifiers: reported as absent, the attribute was left in place
+    for pyHanko to parse a second time, and the ValueError came back out of a public function.
+    """
+
+
+def _timestamp_attr(signer_info):
+    """The signature-timestamp attribute, or None. Never raises: absent is a normal answer."""
+    try:
+        attrs = signer_info["unsigned_attrs"]
+        if not attrs:
+            return None
+        for attr in attrs:
+            if attr["type"].native == _TST_ATTR:
+                return attr
+    except Exception:
+        return None
+    return None
+
+
 def extract_timestamp_token(signer_info) -> Optional[tuple]:
-    """``(SignedData, genTime)`` for a signature timestamp, or None when there is no token.
+    """``(SignedData, genTime)``, or None when the signature carries no timestamp.
+
+    Raises :class:`MalformedTimestamp` when there *is* a token and it cannot be read. Three
+    outcomes, not two: absent, readable, and present-but-broken. The third is the one a file gets
+    when somebody edits it, since the attribute is unsigned and rewriting it costs nothing.
 
     Read *before* the token is validated, which is the whole reason this exists. Two later
     decisions need the genTime and neither can wait for a verdict: the TSA's own certificate has
@@ -113,23 +142,68 @@ def extract_timestamp_token(signer_info) -> Optional[tuple]:
     validation this time is used to set up. A forged genTime buys nothing on its own, because a
     token that does not chain to the supplied anchors fails regardless of which moment it is
     judged at.
-
-    Anything unparseable reads as absent. A token too broken to state a time has nothing to say
-    about when the file was signed, and the validation that follows is what reports it as broken.
     """
-    try:
-        attrs = signer_info["unsigned_attrs"]
-        if not attrs:
-            return None
-        for attr in attrs:
-            if attr["type"].native != _TST_ATTR:
-                continue
-            signed_data = attr["values"][0]["content"]
-            gen_time = signed_data["encap_content_info"]["content"].parsed["gen_time"].native
-            return signed_data, gen_time
-    except Exception:
+    attr = _timestamp_attr(signer_info)
+    if attr is None:
         return None
-    return None
+    try:
+        signed_data = attr["values"][0]["content"]
+        return signed_data, signed_data["encap_content_info"]["content"].parsed["gen_time"].native
+    except Exception as exc:
+        raise MalformedTimestamp(f"{type(exc).__name__}: {str(exc).splitlines()[0][:80]}") from exc
+
+
+def drop_timestamp_token(signer_info) -> bool:
+    """Remove the signature-timestamp attribute in memory. True when there was one.
+
+    Sound because the attribute is *unsigned*: it is not covered by the signature, so taking it
+    out cannot change what the signature says about the document. Used only for a token that has
+    already been reported as unreadable, so that pyHanko can go on and give a verdict about the
+    signature instead of raising on the same bytes we already failed to parse. Without this a
+    broken token takes the whole result down with it, and the person is told nothing at all about
+    a signature that may well be fine.
+    """
+    attrs = signer_info["unsigned_attrs"]
+    if not attrs:
+        return False
+    keep = [a for a in attrs if a["type"].native != _TST_ATTR]
+    if len(keep) == len(attrs):
+        return False
+    if keep:
+        signer_info["unsigned_attrs"] = cms.CMSAttributes(keep)
+    else:
+        del signer_info["unsigned_attrs"]
+    return True
+
+
+def timestamp_of(signer_info, tsa_trust_roots=None, tsa_other_certs=None) -> tuple:
+    """``(TimestampInfo, Check, trusted_time)`` for a CMS SignerInfo's signature timestamp.
+
+    ``(None, None, None)`` when there is no timestamp. Shared by the PDF and CMS verifiers, which
+    ask this question identically; XAdES finds its token in an XML element and names its checks
+    differently, so it reaches :func:`evaluate_timestamp` by its own route.
+
+    Judged before anything else, and that ordering is the point: which moment to judge the TSA's
+    certificate at, and which moment to judge the signer's, both depend on the answer, and both
+    are validation contexts that have to be built before pyHanko is called.
+    """
+    name = TS_TRUSTED if tsa_trust_roots else TS_PRESENT
+    try:
+        token = extract_timestamp_token(signer_info)
+    except MalformedTimestamp as exc:
+        # Out of the way, so the signature still gets a verdict. See drop_timestamp_token.
+        drop_timestamp_token(signer_info)
+        detail = f"could not parse timestamp: {exc}"
+        return (TimestampInfo(present=True, intact=False, valid=False, detail=detail),
+                Check(name, False, detail), None)
+    if token is None:
+        return None, None, None
+    signed_data, gen_time = token
+    return evaluate_timestamp(
+        signed_data, gen_time, timestamp_imprint_source(signer_info),
+        present_name=TS_PRESENT, trusted_name=TS_TRUSTED,
+        tsa_trust_roots=tsa_trust_roots, tsa_other_certs=tsa_other_certs,
+    )
 
 
 def timestamp_imprint_source(signer_info) -> bytes:

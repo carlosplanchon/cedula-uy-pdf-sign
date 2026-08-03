@@ -517,7 +517,7 @@ firmauy verify-xml signed.xml --tsa-ca tsa-ca.pem
 firmauy verify-xml signed.xml --json
 ```
 
-**Trusted timestamps and long-term validation.** By default a timestamp is checked to be intact,
+**Trusted timestamps and validation at the sealed time.** By default a timestamp is checked to be intact,
 to carry a valid signature of its own, and to *bind* to the signature it travels with. Its TSA is
 not validated, so the `genTime` is shown as asserted, not verified. Pass
 `--tsa-ca <tsa-bundle.pem>` (the timestamping authority's certificate) to validate the RFC 3161

@@ -107,7 +107,7 @@ def _verify_timestamp(sig, tsa_trust_roots=None, tsa_other_certs=None) -> Option
     chain: with anchors the TSA certificate is validated against them, with the timeStamping EKU,
     at the genTime. On success the genTime counts as trusted time and comes back as
     ``trusted_time``, so the caller can evaluate the signing certificate at that moment
-    (long-term validation).
+    (validation at the sealed time, not the AdES -LT/-LTA levels).
 
     Without anchors ``trusted_time`` is None and the genTime is only what an unvalidated TSA
     asserts: whoever could alter the file could substitute a token from any TSA carrying any
@@ -162,7 +162,7 @@ def verify_xml(
     `check_revocation=True` it also checks CRL/OCSP (level 3, needs network). Otherwise only
     integrity (level 1). With `tsa_trust_roots` (from --tsa-ca) a XAdES-T timestamp's TSA is
     validated; on success the signing certificate is evaluated at the trusted genTime instead of now
-    (long-term validation)."""
+    (validation at the sealed time, not the AdES -LT/-LTA levels)."""
     root = etree.fromstring(xml_bytes)
     sigs = root.findall(_ds("Signature"))
     if not sigs:
@@ -267,7 +267,8 @@ def _verify_signature(
         timestamp_ok = True
 
     # Level 2: certificate chain. With a trust-validated timestamp (--tsa-ca) the signing
-    # certificate is evaluated at the trusted genTime (long-term validation), else at at_time/now.
+    # certificate is evaluated at the trusted genTime, else at at_time/now. That is validation at
+    # the sealed time and not the AdES -LT/-LTA levels: no historical revocation evidence.
     trusted = False
     if level1_ok and trust_roots:
         at = trusted_time or at_time or datetime.now(timezone.utc)

@@ -25,15 +25,11 @@ from pyhanko_certvalidator import ValidationContext
 from firmauy.cert_utils import name_fields, to_asn1_certs
 from firmauy.verify_common import (
     CHAIN_CHECK,
-    TS_PRESENT,
-    TS_TRUSTED,
     Check,
     VerifyResult,
-    evaluate_timestamp,
-    extract_timestamp_token,
     muted_path_building_warnings,
     note_trusted_time,
-    timestamp_imprint_source,
+    timestamp_of,
 )
 
 
@@ -49,32 +45,6 @@ def _load_signed_data(p7s_bytes: bytes) -> asn1cms.SignedData:
         raise ValueError(f"not a CMS SignedData (.p7s): content type is '{content_type}'")
     return ci["content"]
 
-
-
-def _timestamp_of(signed_data, tsa_trust_roots, tsa_other_certs):
-    """This signature's timestamp, judged first: ``(TimestampInfo, Check, trusted_time)``.
-
-    First, and that ordering is the point. Two later decisions need the answer: which moment to
-    judge the TSA's own certificate at, and, once the token is trusted, which moment to judge the
-    *signer's* certificate at. Both are validation contexts handed to pyHanko, so they have to be
-    built already knowing whether the token holds up.
-
-    pyHanko reports the same facts on the status it returns, and this deliberately does not read
-    them. Two sources for one answer is how they start to disagree, and this is the one the
-    moments are decided from.
-    """
-    signer_infos = signed_data["signer_infos"]
-    if not len(signer_infos):
-        return None, None, None
-    token = extract_timestamp_token(signer_infos[0])
-    if token is None:
-        return None, None, None
-    token_data, gen_time = token
-    return evaluate_timestamp(
-        token_data, gen_time, timestamp_imprint_source(signer_infos[0]),
-        present_name=TS_PRESENT, trusted_name=TS_TRUSTED,
-        tsa_trust_roots=tsa_trust_roots, tsa_other_certs=tsa_other_certs,
-    )
 
 
 def _map_status(status, trust_evaluated: bool, info=None, ts_check=None) -> VerifyResult:
@@ -174,7 +144,10 @@ def verify_cms(
     at = at_time or datetime.now(timezone.utc)
 
     # First, because both moments below depend on the answer. See _timestamp_of.
-    info, ts_check, trusted_time = _timestamp_of(signed_data, tsa_trust_roots, tsa_other_certs)
+    signer_infos = signed_data["signer_infos"]
+    info, ts_check, trusted_time = (
+        timestamp_of(signer_infos[0], tsa_trust_roots, tsa_other_certs)
+        if len(signer_infos) else (None, None, None))
 
     vc = None
     if trust_roots:
