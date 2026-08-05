@@ -4,7 +4,7 @@
 
 **Your cédula is a signing key. FirmaUY brings it to the terminal.**
 
-Sign and verify PDF, XML and any file with your Uruguayan national ID card over PKCS#11. Open-standard signatures (PAdES, XAdES, CAdES) that verify in any compliant validator, with the whole trust chain checked locally against the Uruguayan national root. Your documents stay on your machine. Use it from the terminal, or from Python through its [public API](#use-as-a-library).
+Sign and verify PDF, XML and any file with your Uruguayan national ID card over PKCS#11. Open-standard signatures (PAdES, XAdES, CAdES) designed to interoperate with compliant validators, with the whole trust chain checked locally against the Uruguayan national root. Signing and verifying keep your documents on your machine. Use it from the terminal, or from Python through its [public API](#use-as-a-library).
 
 [![CI](https://github.com/carlosplanchon/firmauy/actions/workflows/ci.yml/badge.svg)](https://github.com/carlosplanchon/firmauy/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/firmauy.svg)](https://pypi.org/project/firmauy/)
@@ -18,9 +18,11 @@ Sign and verify PDF, XML and any file with your Uruguayan national ID card over 
 > it to [firma.gub.uy](https://firma.gub.uy/), the State validator, and keep its answer. Every
 > time, for every document that matters. firmauy checking its own output is not independent
 > evidence, and the arbiter your counterparty will use is the State's validator: agreement with
-> it is [tracked, not assumed](docs/security-invariants.md#the-conformance-protocol). The portal
-> validates PDF, so a detached `.p7s` cannot be checked there, which is worth weighing when you
-> choose a format for something important.
+> it is [tracked, not assumed](docs/security-invariants.md#the-conformance-protocol). The
+> cross-check is also the one recommended step that leaves your machine: uploading sends the
+> document to a State-operated service, so for confidential material do it through whatever
+> channel your situation allows. The portal validates PDF, so a detached `.p7s` cannot be
+> checked there, which is worth weighing when you choose a format for something important.
 
 ## Quick start
 
@@ -240,7 +242,7 @@ is documented in **[docs/api.md](docs/api.md)**.
 
 ## Privacy
 
-This tool is designed to run entirely locally.
+This tool is designed to run entirely locally. The one recommended exception is deliberate and yours to take: cross-checking a signed document at firma.gub.uy uploads that document to a State-operated service.
 
 It does not collect, transmit, or store any user data externally.
 

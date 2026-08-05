@@ -12,9 +12,10 @@ What can be collected is verdicts. This script verifies a signed file locally, e
 what identifies the infrastructure, and prints one markdown row to paste into a GitHub issue,
 next to the verdict firma.gub.uy gave the same file.
 
-The redaction contract, enforced below rather than promised: a row may never contain the
-signer's name, their document number, the certificate serial, the file's name, or anything else
-that identifies a person or a document. What it does contain is public infrastructure: the
+The redaction contract, enforced below rather than promised: a row may never carry the direct
+identifiers the verifier saw, the signer's name, their document number, the certificate serial,
+the file's name. Redacted is not anonymous, and the protocol says so: what the row keeps is
+coarse on purpose. What it does contain is public infrastructure: the
 issuing CA's name, which CRL the certificate points at, the algorithm, the TSA's name, and the
 two verdicts. If the assembled row is found carrying any of the signer fields the verifier saw,
 the script refuses to print it and exits 3, because a redaction that fails should fail loudly.
@@ -124,7 +125,7 @@ def _portal(raw: str) -> str:
         return "correcta"
     if "problema" in norm or "analizar" in norm or "error" in norm:
         return "problema"
-    return raw.strip()
+    return " ".join(raw.split())[:60]
 
 
 def _agree(firmauy: str, portal: str) -> str:
@@ -135,6 +136,13 @@ def _agree(firmauy: str, portal: str) -> str:
     if (firmauy, portal) in (("VALID", "no correcta"), ("INVALID", "correcta")):
         return "NO"
     return "?"
+
+
+def _cell(value: object) -> str:
+    """One table cell: whitespace collapsed and pipes escaped, because every value here is either
+    somebody's pasted text or a field read out of a hostile file, and either can carry the one
+    character that breaks a markdown table into wrong columns."""
+    return " ".join(str(value).split()).replace("|", "\\|")
 
 
 def _leaks(row: str, forbidden: dict[str, str]) -> list[str]:
@@ -199,7 +207,7 @@ def main() -> int:
     except PackageNotFoundError:
         firmauy_version = "source"
 
-    row = "| " + " | ".join([
+    row = "| " + " | ".join(_cell(value) for value in [
         datetime.now().strftime("%Y-%m"),
         firmauy_version,
         kind,

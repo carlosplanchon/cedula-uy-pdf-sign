@@ -106,6 +106,26 @@ def _sheets(raw: bytes) -> dict[str, str]:
     }
 
 
+def _ca4_controls(raw: bytes) -> dict[int, str]:
+    """Every CA.4 control in the Cumplimiento sheet, by number, read cell by cell.
+
+    Cell by cell and from that one sheet on purpose. The workbooks carry each control twice,
+    once more under Madurez with different casing, and a regex over flattened sheet text once
+    concluded from those boundaries that the tiers disagreed when they do not.
+    """
+    workbook = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    out = {}
+    for sheet in workbook.worksheets:
+        if sheet.title != "Cumplimiento":
+            continue
+        for row in sheet.iter_rows(values_only=True):
+            for cell in row:
+                match = cell and re.match(r"\s*CA\.4-(\d+):\s*(.+)", str(cell), re.S)
+                if match:
+                    out[int(match.group(1))] = _norm(match.group(2))
+    return out
+
+
 def _levels(guide_text: str, prefix: str) -> dict[int, int]:
     """Which level the guide sorts each numbered control into. The guide's Controles section is
     'Nivel N' headings with 'XX.N-M:' items under them, flattened here to text."""
@@ -163,6 +183,16 @@ def main() -> int:
         nonlocal failures
         failures += 0 if ok else 1
         print(f"  {'ok   ' if ok else 'FAIL '} {message}")
+
+    print("\nstructural claims the page makes about the catalogue:")
+    tiers_controls = {name: _ca4_controls(raw[name])
+                      for name in ("catalogue-avanzado", "catalogue-basico", "catalogue-estandar")}
+    counts = {name: len(found) for name, found in tiers_controls.items()}
+    check(all(count == 12 for count in counts.values()),
+          f"each tier carries twelve CA.4 controls in its Cumplimiento sheet ({counts})")
+    reference = tiers_controls["catalogue-avanzado"]
+    check(all(found == reference for found in tiers_controls.values()),
+          "the twelve appear identically in all three tiers, as the page claims")
 
     print("\nquotations, each against the artifact its line declares:")
     for label, level, quote in _entries(doc):

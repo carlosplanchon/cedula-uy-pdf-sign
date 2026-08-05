@@ -390,7 +390,9 @@ any signer field the verifier saw, and
 with a fixture that contains a fake document number, so its absence from the output means the
 redaction ran rather than that there was nothing to redact. What a row does carry is public:
 the issuing CA's name, which CRL the certificate points at, the algorithm, the TSA's name, the
-two verdicts, and whether they agree.
+two verdicts, and whether they agree. Redacted is not anonymous: a rare combination of year,
+chip, CA and CRL narrows who a row could describe, so contribute knowing it is coarse, not
+invisible.
 
 **Contributing one:**
 

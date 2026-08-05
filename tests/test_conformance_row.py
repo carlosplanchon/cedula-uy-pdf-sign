@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -173,3 +174,31 @@ def test_the_guard_ignores_degenerate_values_and_catches_real_ones():
 def test_agree_never_invents_agreement(verdict, expected):
     mod = _load_script()
     assert mod._agree(verdict, "correcta") == expected
+
+
+def test_a_hostile_phrase_cannot_break_the_table(tmp_path):
+    """Every cell is either pasted text or a field read out of a hostile file, and one pipe or
+    newline in either shifts every later column of the issue's table into the wrong place."""
+    data = tmp_path / "d.bin"
+    data.write_bytes(b"x\n")
+    p7s = tmp_path / "d.bin.p7s"
+    p7s.write_bytes(_chained_p7s(b"x\n"))
+
+    result = _run(p7s, "--original", data,
+                  "--firma-gub-uy", "raro | columna inyectada\nsegunda línea")
+
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    header, row = lines[0], lines[2]
+    # What markdown actually splits on is an unescaped pipe. An escaped one renders as a literal
+    # character inside its cell, which is exactly where the injected text should have ended up.
+    unescaped = re.findall(r"(?<!\\)\|", row)
+    assert len(unescaped) == header.count("|"), "an injected pipe shifted the columns"
+    assert "raro \\| columna" in row, "the phrase should survive, sanitized, inside its cell"
+    assert "segunda línea" in row, "the newline should collapse, not truncate the phrase"
+
+
+def test_cells_collapse_whitespace_and_escape_pipes():
+    mod = _load_script()
+    assert mod._cell("a | b\nc") == "a \\| b c"
+    assert mod._cell("  spaced   out  ") == "spaced out"
