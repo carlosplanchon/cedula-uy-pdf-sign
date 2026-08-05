@@ -18,7 +18,7 @@ recursive-include docs *.md
 recursive-include tests *.py
 
 # docs/development.md tells the reader to run this, and that document now travels.
-recursive-include scripts *.sh
+recursive-include scripts *.sh *.py
 
 # The exact versions everything was measured against, and the definition of when the searching
 # checks run. Both are claims the security document makes, and neither is checkable from the

@@ -1,19 +1,36 @@
-# Security invariants of the verifiers
+# Security invariants of timestamp verification
 
-How the verification side of firmauy is tested against hostile and damaged input, stated as
-invariants: the risk each one controls, the clause of Agesic's Marco de Ciberseguridad (MCU 5.0)
-it speaks to, the tests that enforce it, and the counterexamples that were actually found on the
-way here. Current as of firmauy 1.14.0.
+How firmauy's handling of RFC 3161 signature timestamps is tested against hostile and damaged
+input, stated as invariants: the risk each one controls, the clause of Agesic's Marco de
+Ciberseguridad (MCU 5.0) it speaks to, the tests that enforce it, and the counterexamples that
+were actually found on the way here.
+
+**Scope, in the title on purpose.** All eight invariants below are about timestamps. That is where
+the defects were, so that is where the work went, and calling the page "the verifiers" claimed a
+coverage the matrix does not have. Signature and certificate verification outside the timestamp
+path is tested like the rest of the library and has no matrix, no clause mapping and no searching
+check. Neither does the signing side: see gap 8.
+
+| Baseline | |
+|---|---|
+| Release | firmauy 1.14.0 |
+| Commit | [`d2c9267`](https://github.com/carlosplanchon/firmauy/commit/d2c9267d6b61bb0cf8a4f91d2897beb57db31ea2) |
+| Dated | 2026-08-05 |
+
+Every number and every test name below describes that commit. The links to test files are
+relative, so reading this page at the `v1.14.0` tag shows the tests as they were, and reading it
+at `main` shows them as they are now, which may have moved. The commit links in the
+counterexamples are absolute and always point at the fix they name.
 
 Agesic's audit guidance for requirement AD.1 lists this category of evidence by name:
 "Documentación de pruebas de seguridad, criterios de aceptación y entregables vinculados a
-requisitos de seguridad". This page packages that evidence for the verifier. The format, a
+requisitos de seguridad". This page packages that evidence for the timestamp path. The format, a
 traceability matrix, is this project's choice, not something the guidance prescribes.
 
 ## What this is, and what it is not
 
 **It is** a traceability matrix, and together with the procedure below, a documented and
-reproducible baseline: the measured state of the verifier's security testing at 1.14.0. Each row
+reproducible baseline: the measured state of the timestamp path's security testing at 1.14.0. Each row
 connects one invariant to the risk it controls, the clause it speaks to, the tests that enforce
 it, and the real defects found while getting there. Later audits, reviews and releases have this
 to compare against.
@@ -41,22 +58,51 @@ one. The State-operated verification service is [firma.gub.uy](https://firma.gub
 
 ## The clauses cited, verbatim
 
-- **[CA.4 objetivo]** "Lograr el cumplimiento con los lineamientos establecidos por la UCE y
-  Agesic para el uso de firma electrónica avanzada."
-- **[CA.4 nivel 2]** "la solución incorpora medidas de detección de firmas alteradas o
-  invalidadas, incluyendo trazabilidad del error"
-- **[CA.4-10]** (nivel 4) "los sistemas deben permitir el uso de sellos de tiempo compatibles
-  con RFC 3161"
-- **[CA.4-11]** (nivel 4) "se realizan auditorías de los módulos de firma electrónica,
+Every quotation below was checked on 2026-08-05, and each is quoted from the artifact that
+carries it, because Agesic publishes two and they are not interchangeable:
+
+- The **requirement catalogue**, [Planilla MCU 5.0
+  Avanzado](https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/sites/agencia-gobierno-electronico-sociedad-informacion-conocimiento/files/documentos/publicaciones/Planilla%20MCU%205.0%20Avanzado.xlsx)
+  and its Básico and Estándar tiers, which give each requirement a **title** and the numbered
+  text of every control. All twelve CA.4 controls appear identically in all three tiers.
+- The **implementation guide**, one page per requirement, which states an objective the
+  catalogue does not carry and sorts the controls into four levels the catalogue does not show.
+
+Each line below says which of the two it came from, because checking against one of them alone
+will report the other's fields as missing. Control texts are the catalogue's, levels are the
+guide's, and the law at the end is IMPO's.
+
+The check is repeatable: [`scripts/check_mcu_quotes.py`](../scripts/check_mcu_quotes.py) fetches
+the artifacts fresh, prints the SHA-256 of each so "checked" means "against these bytes", and
+re-checks every quotation and level annotation below against the artifact its line declares. A
+checker and not a generator, on purpose: when it fails, the next step is a person reading what
+the source now says, never a script rewriting this page. The chain's other direction is hermetic
+and runs with the suite on every pull request:
+[`tests/test_invariants_doc.py`](../tests/test_invariants_doc.py) fails when a test named on this
+page stops existing where the page says it lives, when an internal anchor or relative link
+breaks, or when the matrix cites a clause label, gap or counterexample the page does not define.
+
+- **[CA.4 title]**, from the catalogue: "Establecer los controles para el uso de firma
+  electrónica"
+- **[CA.4 objective]**, from the guide: "Lograr el cumplimiento con los lineamientos
+  establecidos por la UCE y Agesic para el uso de firma electrónica avanzada."
+- **[CA.4-5]** (level 1) "se debe hacer la validación de certificados a través de OCSP (Online
+  Certificate Status Protocol), CRL (Certificate Revocation List) o equivalente."
+- **[CA.4-6]** (level 2) "la solución incorpora medidas de detección de firmas alteradas o
+  invalidadas, incluyendo trazabilidad del error."
+- **[CA.4-10]** (level 4) "los sistemas deben permitir el uso de sellos de tiempo compatibles
+  con RFC 3161."
+- **[CA.4-11]** (level 4) "se realizan auditorías de los módulos de firma electrónica,
   incluyendo pruebas de cumplimiento de formatos, protocolos, protección de claves y servicios
-  de sellado de tiempo"
-- **[CA.4-12]** (nivel 4) "los resultados de las auditorías o revisiones son analizados e
-  incorporados a la mejora de la solución y comunicados al RSI"
-- **[AD.1 nivel 2]** "se sistematizan las actividades de prueba, incluyendo casos de prueba
-  orientados a las validaciones de seguridad"
-- **[AD.1 nivel 3]** "se define un procedimiento documentado de pruebas de seguridad" and "se
-  definen los criterios de aceptación de los productos desde la perspectiva de seguridad"
-- **[AD.1 evidencia]** "Documentación de pruebas de seguridad, criterios de aceptación y
+  de sellado de tiempo."
+- **[CA.4-12]** (level 4) "los resultados de las auditorías o revisiones son analizados e
+  incorporados a la mejora de la solución y comunicados al RSI."
+- **[AD.1-4]** (level 2) "se sistematizan las actividades de prueba, incluyendo casos de prueba orientados
+  a las validaciones de seguridad."
+- **[AD.1-5]** (level 3) "se define un procedimiento documentado de pruebas de seguridad."
+- **[AD.1-6]** (level 3) "se definen los criterios de aceptación de los productos desde la perspectiva de
+  seguridad de la información."
+- **[AD.1 evidencia]** (guide, its evidence list) "Documentación de pruebas de seguridad, criterios de aceptación y
   entregables vinculados a requisitos de seguridad"
 - **[Ley 18.600 art. 6]** "El documento electrónico no hará fe respecto de su fecha, a menos que
   ésta conste a través de un fechado electrónico otorgado por un prestador de servicios de
@@ -81,6 +127,38 @@ allowed to affect the signer's validation. The implementation is `evaluate_times
 `src/firmauy/verify_common.py`, which returns a trusted time on that exact conjunction and on
 nothing less.
 
+## Who the invariants are against
+
+Stated once here rather than left to be inferred from eight rows, because an invariant is only
+as meaningful as the adversary it is about.
+
+**What the attacker controls: the whole file.** Verification is handed a document from somewhere
+else, by definition. Every byte of it is hostile input, including the parts that look structural.
+That is the premise of both searching checks below.
+
+**Where that costs least effort: the unsigned attributes.** A signature timestamp lives in the
+SignerInfo's *unsigned* attributes, which by construction the document's signature does not
+cover. So a token can be rewritten while the signature over the document stays perfectly intact.
+This is not a weakness in the design of CMS, it is what the attribute is for, and it is why
+invariants 2, 3 and 4 exist: whoever can edit a file gets the timestamp for free, and must not
+thereby be able to accuse the signature, reach VALID, or choose the day the signer's certificate
+is judged on.
+
+**What the attacker does not control: the anchors.** Trust roots come from the caller, and the
+caller is the person verifying. `ca_file` and `tsa_ca` are theirs to pass. Invariant 5 is about
+keeping those two decisions apart, so that trusting a timestamping authority never widens who may
+sign.
+
+**What is trusted, and therefore out of scope.** The cryptographic primitives, asn1crypto's and
+pyHanko's correctness beyond the failures listed as counterexamples, the operating system, and
+the anchors the caller chose. A defect in any of those is not something these invariants defend
+against, and the sweep finding two escapes that had sailed through that trusted parsing layer
+(C6, C7) is a reminder that the line is a decision rather than a guarantee.
+
+**What is deliberately not defended.** Resource exhaustion (gap 7). An adversary who controls the
+trust anchors, which is the same as controlling the answer. Anything about the key: this page is
+about reading signatures, not making them, and key protection is the card's job.
+
 ## The matrix
 
 All named tests run in CI with the normal suite (`uv run pytest`), which includes the properties
@@ -100,14 +178,14 @@ a row, when one does; a dash means the row is stated no wider than what its test
 
 | # | Invariant | Risk controlled | Formats | Clause | Enforced by | Counterexamples | Limits |
 |---|---|---|---|---|---|---|---|
-| 1 | A damaged timestamp token always yields a verdict with the cause in `timestamp.detail`, never an escaped exception | A crafted file crashes the verifier, or the damage is detected with no traceable cause | PDF, XAdES, CMS | [CA.4 nivel 2], [CA.4-11] | `test_an_unreadable_token_does_not_take_the_whole_result_down`, `test_an_unreadable_token_does_not_take_a_pdf_down_either`, `test_damage_beyond_the_first_field_read_is_still_caught`, `test_a_hash_nobody_implements_is_an_answer_and_not_a_crash`, `test_xades_t.py::test_tampered_timestamp_fails_only_the_timestamp_check`, plus the sweep and `test_properties_timestamp.py::test_combined_damage_stays_inside_the_failure_envelope` | C5, C6, C7 | - |
-| 2 | Damage to the timestamp attribute never indicts the document's own signature | A broken stamp reads as a forged document, accusing the wrong thing. The attribute is unsigned, so it says nothing about the document | PDF, XAdES, CMS | [CA.4 nivel 2] (traceability means the error is attributed where it is) | `test_neither_kind_of_damage_touches_the_signature_itself`, `test_an_unreadable_token_still_lets_the_signature_be_judged`, `test_tampering_with_the_unsigned_timestamp_attribute_leaves_the_signature_intact`, `test_xades_t.py::test_a_forged_token_does_not_make_the_signature_invalid`, plus the sweep and the combined-damage property | none: held by design, verified by the sweep and the properties | - |
-| 3 | A broken timestamp never leaves the overall verdict at VALID | A tampered token hides behind a green verdict | PDF, XAdES, CMS | [CA.4 nivel 2] | `test_a_tampered_pdf_timestamp_holds_the_verdict_at_indeterminate`, `test_a_tampered_timestamp_holds_the_verdict_at_indeterminate`, `test_xades_t.py::test_tampered_timestamp_fails_only_the_timestamp_check` | C1 | - |
-| 4 | Only a token with a usable validation time (definition above) moves the moment the signer's certificate is judged at | Whoever can rewrite an unsigned attribute picks the day an expired or revoked certificate is checked on | PDF, XAdES, CMS (one shared `evaluate_timestamp`) | [CA.4-10], [CA.4 nivel 2] | `test_an_untrusted_stamp_does_not_move_the_moment`, `test_a_stamp_from_an_expired_responder_is_still_not_trusted_under_the_wrong_root`, `test_xades_t.py::test_tsa_ca_wrong_anchor_does_not_trust_timestamp`, `test_properties_timestamp.py::test_an_untrusted_stamp_never_rescues_an_expired_certificate` | none. The guarding test itself was strengthened after mutation testing showed it passed for the wrong reason | - |
-| 5 | Signer anchors and TSA anchors never contaminate each other, in either direction | Trusting a timestamping authority quietly widens who may sign, or trusting a signer vouches for a TSA | PDF, XAdES, CMS (separate validation contexts everywhere) | [CA.4 objetivo] | `test_the_signer_anchors_do_not_decide_the_timestamp`, `test_the_tsa_anchors_do_not_vouch_for_the_signer` | none | - |
-| 6 | Timestamp trust is three-valued end to end: "never evaluated" is never reported as "evaluated and failed", and `gen_time` survives an untrusted chain | Inventing a failure nobody went looking for, or erasing the date, which is the one thing the stamp exists to state | PDF, XAdES, CMS, and the `--json` output | [CA.4 nivel 2] | `test_xades_t.py::test_a_sound_token_under_the_wrong_anchor_is_not_called_broken`, `test_xades_t.py::test_the_gen_time_survives_a_chain_that_did_not_validate`, `test_the_json_says_null_for_a_chain_that_was_not_looked_at` | C2 | - |
+| 1 | A damaged timestamp token always yields a verdict with the cause in `timestamp.detail`, never an escaped exception | A crafted file crashes the verifier, or the damage is detected with no traceable cause | PDF, XAdES, CMS | [CA.4-6], [CA.4-11] | `test_an_unreadable_token_does_not_take_the_whole_result_down`, `test_an_unreadable_token_does_not_take_a_pdf_down_either`, `test_damage_beyond_the_first_field_read_is_still_caught`, `test_a_hash_nobody_implements_is_an_answer_and_not_a_crash`, `test_xades_t.py::test_tampered_timestamp_fails_only_the_timestamp_check`, plus the sweep and `test_properties_timestamp.py::test_combined_damage_stays_inside_the_failure_envelope` | C5, C6, C7 | - |
+| 2 | Damage to the timestamp attribute never indicts the document's own signature | A broken stamp reads as a forged document, accusing the wrong thing. The attribute is unsigned, so it says nothing about the document | PDF, XAdES, CMS | [CA.4-6] (traceability means the error is attributed where it is) | `test_neither_kind_of_damage_touches_the_signature_itself`, `test_an_unreadable_token_still_lets_the_signature_be_judged`, `test_tampering_with_the_unsigned_timestamp_attribute_leaves_the_signature_intact`, `test_xades_t.py::test_a_forged_token_does_not_make_the_signature_invalid`, plus the sweep and the combined-damage property | none: held by design, verified by the sweep and the properties | - |
+| 3 | A broken timestamp never leaves the overall verdict at VALID | A tampered token hides behind a green verdict | PDF, XAdES, CMS | [CA.4-6] | `test_a_tampered_pdf_timestamp_holds_the_verdict_at_indeterminate`, `test_a_tampered_timestamp_holds_the_verdict_at_indeterminate`, `test_xades_t.py::test_tampered_timestamp_fails_only_the_timestamp_check` | C1 | - |
+| 4 | Only a token with a usable validation time (definition above) moves the moment the signer's certificate is judged at | Whoever can rewrite an unsigned attribute picks the day an expired or revoked certificate is checked on | PDF, XAdES, CMS (one shared `evaluate_timestamp`) | [CA.4-10], [CA.4-6] | `test_an_untrusted_stamp_does_not_move_the_moment`, `test_a_stamp_from_an_expired_responder_is_still_not_trusted_under_the_wrong_root`, `test_xades_t.py::test_tsa_ca_wrong_anchor_does_not_trust_timestamp`, `test_properties_timestamp.py::test_an_untrusted_stamp_never_rescues_an_expired_certificate` | none. The guarding test itself was strengthened after mutation testing showed it passed for the wrong reason | - |
+| 5 | Signer anchors and TSA anchors never contaminate each other, in either direction | Trusting a timestamping authority quietly widens who may sign, or trusting a signer vouches for a TSA | PDF, XAdES, CMS (separate validation contexts everywhere) | [CA.4 objective] | `test_the_signer_anchors_do_not_decide_the_timestamp`, `test_the_tsa_anchors_do_not_vouch_for_the_signer` | none | - |
+| 6 | Timestamp trust is three-valued end to end: "never evaluated" is never reported as "evaluated and failed", and `gen_time` survives an untrusted chain | Inventing a failure nobody went looking for, or erasing the date, which is the one thing the stamp exists to state | PDF, XAdES, CMS, and the `--json` output | [CA.4-6] | `test_xades_t.py::test_a_sound_token_under_the_wrong_anchor_is_not_called_broken`, `test_xades_t.py::test_the_gen_time_survives_a_chain_that_did_not_validate`, `test_the_json_says_null_for_a_chain_that_was_not_looked_at` | C2 | - |
 | 7 | A timestamp does not decay: the TSA's certificate is judged at `genTime`, and a wrong anchor still refuses it | Every stamped document silently loses its time evidence the day the responder certificate behind it expires | PDF, XAdES, CMS | [CA.4-10] | `test_a_pdf_timestamp_is_judged_at_gentime_and_not_at_verification_time`, `test_a_p7s_timestamp_is_judged_at_gentime_and_not_at_verification_time`, `test_xades_t.py::test_tsa_ca_enables_ltv_evaluation_at_gentime`, `test_properties_timestamp.py::test_a_trusted_stamp_makes_the_verdict_independent_of_when_you_look` | C3 | [gap 3](#known-gaps-in-the-order-they-should-close): judged at its own asserted `genTime`, which -LTA would settle |
-| 8 | The three formats agree on the expired-signer, trusted-stamp scenario: same verdict | The verdict depends on the file container instead of on the cryptography | PDF, XAdES, CMS | [CA.4 objetivo], [AD.1 nivel 2] | `test_the_three_formats_agree_about_an_expired_signer_with_a_trusted_stamp`. **One scenario, not a table of them**: the row is stated no wider than its evidence, and widening it means parameterising over trust and time states first | C4 | [gap 6](#known-gaps-in-the-order-they-should-close): one scenario, not a table of them |
+| 8 | The three formats agree on the expired-signer, trusted-stamp scenario: same verdict | The verdict depends on the file container instead of on the cryptography | PDF, XAdES, CMS | [CA.4 objective], [AD.1-4] | `test_the_three_formats_agree_about_an_expired_signer_with_a_trusted_stamp`. **One scenario, not a table of them**: the row is stated no wider than its evidence, and widening it means parameterising over trust and time states first | C4 | [gap 6](#known-gaps-in-the-order-they-should-close): one scenario, not a table of them |
 
 ## Counterexamples found
 
@@ -155,9 +233,9 @@ None of it is a credential: nobody external has assessed this code.
 ## The two searching checks
 
 Most of the tests above answer a question somebody already thought to ask. Two do not: they
-search. AD.1 nivel 3 asks for "un procedimiento documentado de pruebas de seguridad" and for
-"criterios de aceptación de los productos desde la perspectiva de seguridad", and for the
-timestamp parser these two sections are that procedure and those criteria.
+search. [AD.1-5] asks for "un procedimiento documentado de pruebas de seguridad" and [AD.1-6] for
+"criterios de aceptación de los productos desde la perspectiva de seguridad de la información",
+and for the timestamp parser these two sections are that procedure and those criteria.
 
 They divide the work by whether the space can be walked. All three are finite. The sweep
 enumerates, because 1096 cases is a number you can count to. The properties sample, because
@@ -188,10 +266,10 @@ FIRMAUY_SWEEP=1 uv run pytest tests/test_sweep_tstinfo.py -q
 
 Last full run: firmauy 1.14.0, a 137 byte TSTInfo, 1096 single-bit mutations, zero violations,
 25 seconds on a desktop machine. The two escapes it found (C6, C7) were in code that had been
-reviewed three times and shipped with 385 passing deterministic tests, which is why it runs
+reviewed three times and shipped with a deterministic suite of 390 tests, which is why it runs
 continuously rather than sitting archived.
 
-Two clauses of CA.4 nivel 4 describe this loop. [CA.4-11] asks for audits of the signature
+Two of CA.4's level 4 controls describe this loop. [CA.4-11] asks for audits of the signature
 modules "incluyendo pruebas de cumplimiento de formatos, protocolos, protección de claves y
 servicios de sellado de tiempo". The sweep provides technical evidence relevant to the
 timestamping side of such an audit and nothing more. What it demonstrates is robustness under
@@ -247,8 +325,13 @@ these semantics. Both carry their own suites.
    crash and does not misreport its own model. None of it proves the verdicts agree with
    [firma.gub.uy](https://firma.gub.uy/) on real cédula signatures, and that agreement is the
    first thing an institutional reviewer should ask about. Manual today.
-2. **Revocation end to end.** Not re-confirmed against a live cédula signature, as recorded in
-   [trust-anchors.md](trust-anchors.md).
+2. **Revocation end to end.** [CA.4-5] asks for certificate validation "a través de OCSP (Online
+   Certificate Status Protocol), CRL (Certificate Revocation List) o equivalente", and firmauy
+   does it on request with `--check-revocation`. What is missing is confirmation against a live
+   cédula signature, as recorded in [trust-anchors.md](trust-anchors.md). No invariant above
+   covers it, which is why the clause appears here and not in the matrix. Measured on 2026-08-05:
+   the cédula's chain publishes no OCSP at any level, and its CRL is 12.6 MB with 269,202
+   entries, so "o equivalente" is doing real work in that sentence.
 3. **AdES -LT and -LTA are not implemented**, so a timestamp is judged optimistically at its own
    asserted `genTime`. Documented in [trust-anchors.md](trust-anchors.md) and [api.md](api.md).
 4. **Coherent structural mutation is still out of reach.** Both searching checks preserve the
@@ -268,20 +351,27 @@ these semantics. Both carry their own suites.
    bounded, length-preserving corruption, which says nothing about a gigabyte file or a
    thousand-deep nesting. The MCP server mitigates downstream with a subprocess timeout. The
    library itself does not.
-8. **The signing side has no page like this one.** This page covers the verifier, as its title
-   says. How a signature is written, which is where the PIN, the staging file and the access
-   control of the replaced output live, is documented in the code and covered by regressions of
-   the same kind, including several that came from the same reviews. It has no matrix, no
-   clause mapping and no searching check, so nothing here should be read as evidence about it.
+8. **Neither the signing side nor the rest of the verifier has a page like this one.** This page
+   covers timestamp handling, as its title says. How a signature is written, which is where the
+   PIN, the staging file and the access control of the replaced output live, is documented in the
+   code and covered by regressions of the same kind, including several that came from the same
+   reviews. So is signature and certificate verification outside the timestamp path. Neither has
+   a matrix, a clause mapping or a searching check, so nothing here should be read as evidence
+   about either.
 
 ## References
 
+- Agesic, [Planilla MCU 5.0 Avanzado](https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/sites/agencia-gobierno-electronico-sociedad-informacion-conocimiento/files/documentos/publicaciones/Planilla%20MCU%205.0%20Avanzado.xlsx),
+  the requirement catalogue itself, linked from the [Marco de ciberseguridad
+  5.0](https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/comunicacion/publicaciones/marco-ciberseguridad-50)
+  page. Every CA.4 control text above is a cell in its Cumplimiento sheet, which is the form an
+  auditor can open and search rather than a page to read.
 - Agesic, MCU 5.0, requisito AD.1 (Adquisición, desarrollo y mantenimiento):
   [guía de implementación](https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/comunicacion/publicaciones/guia-implementacion-del-mcu-50/adquisicion-desarrollo-mantenimiento).
-  Quoted above: nivel 2, nivel 3, and the audit evidence list.
+  Quoted above: AD.1-4, AD.1-5, AD.1-6 and the audit evidence list.
 - Agesic, MCU 5.0, control CA.4 (Establecer los controles para el uso de firma electrónica):
   [guía de implementación](https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/comunicacion/publicaciones/guia-implementacion-del-mcu-50/control-acceso/ca4-establecer-controles).
-  Quoted above: objetivo, nivel 2, and controls CA.4-10, CA.4-11, CA.4-12.
+  Quoted above: the objective, and the level of each control. The control texts themselves are quoted from the catalogue.
 - Ley 18.600, art. 6, official text at
   [IMPO](https://www.impo.com.uy/bases/leyes/18600-2009/6). Quoted verbatim above and discussed
   in [usage.md](usage.md) and [trust-anchors.md](trust-anchors.md).
