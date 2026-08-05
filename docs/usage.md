@@ -91,8 +91,11 @@ firmauy sign-batch --input-dir docs --output-dir signed --as cades  # force a .p
 
 Outputs follow each type's convention: `<name>_firmado.pdf` / `<name>_firmado.xml` (the `--suffix` is
 configurable) and `<name>.p7s` for detached CAdES. PDF appearance options apply to the PDF files in
-the mix. Per-file errors do not stop the batch. The command exits non-zero if any file failed, and
-prints a `Signed: ok/total` summary.
+the mix. Per-file errors do not stop the batch. The command exits non-zero if any file failed, or
+if any file was signed and committed but its permissions could not be set, which is reported as
+`SIGNED` rather than `OK` and counted separately in the summary as `Needing a chmod: n`. Those
+documents are complete and readable only by their owner, so repair the mode rather than signing
+them again. Prints a `Signed: ok/total` summary either way.
 
 ## Sign a single PDF
 

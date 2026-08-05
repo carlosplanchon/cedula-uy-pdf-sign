@@ -226,6 +226,21 @@ def test_the_signer_anchors_do_not_decide_the_timestamp(tmp_path):
     assert result.timestamp.trusted is None        # and that says nothing about the TSA
 
 
+def test_the_tsa_anchors_do_not_vouch_for_the_signer(tmp_path):
+    """The other direction of the same boundary. A fully trusted timestamping authority says
+    *when* the signature existed and nothing about *who* made it, so full TSA trust with no
+    signer anchors must never raise the verdict past INDETERMINATE."""
+    tsa_cert, timestamper = _timestamper()
+    path, _cert = _signed_pdf(tmp_path, timestamper)
+
+    tsa_anchors = [x509.load_pem_x509_certificate(_pem(tsa_cert))]
+    result = verify_pdf(path, tsa_trust_roots=tsa_anchors)[0]
+
+    assert result.timestamp.trusted is True        # the TSA is fully trusted
+    assert result.trusted is False                 # and that says nothing about the signer
+    assert result.indication == "INDETERMINATE"
+
+
 # --- through the public API, which is where the option is actually spelled -----
 
 def test_tsa_ca_reaches_a_pdf_through_the_api(tmp_path):

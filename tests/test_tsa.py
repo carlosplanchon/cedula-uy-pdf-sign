@@ -112,3 +112,162 @@ def test_warning_dropped_without_notify():
     # The public API passes no notify: a sensitive literal header still builds, silently.
     ts = _b(tsa_url="https://t", tsa_header=["Authorization: Bearer abc"])
     assert ts.headers == {"Authorization": "Bearer abc"}
+
+
+# --- credentials require TLS --------------------------------------------------
+
+def test_basic_auth_over_http_is_refused(monkeypatch):
+    """An anonymous timestamp over http is a defensible choice: the token is signed, so a passive
+    observer learns a hash and can change nothing. A subscriber password over http is not, because
+    it travels in the clear and is reusable once taken."""
+    monkeypatch.setenv("TSA_PW", "s3cret")
+
+    with pytest.raises(ValueError, match="unencrypted"):
+        _b(tsa_url="http://tsa.example/tsr", tsa_user="ana", tsa_pass_env="TSA_PW")
+
+
+def test_a_secret_header_over_http_is_refused(monkeypatch):
+    monkeypatch.setenv("TSA_KEY", "abc123")
+
+    with pytest.raises(ValueError, match="unencrypted"):
+        _b(tsa_url="http://tsa.example/tsr", tsa_header_env=["Authorization: TSA_KEY"])
+
+
+def test_a_literal_header_over_http_is_refused():
+    with pytest.raises(ValueError, match="unencrypted"):
+        _b(tsa_url="http://tsa.example/tsr", tsa_header=["X-Api-Key: abc123"])
+
+
+def test_an_anonymous_timestamp_over_http_is_still_allowed():
+    """Deliberately not blocked. Uruguay has no free public TSA and the ones people reach for are
+    bring-your-own, so refusing plain http entirely would break the ordinary case to protect a
+    credential that is not being sent."""
+    assert isinstance(_b(tsa_url="http://tsa.example/tsr"), HTTPTimeStamper)
+
+
+def test_credentials_over_https_are_fine(monkeypatch):
+    monkeypatch.setenv("TSA_PW", "s3cret")
+
+    built = _b(tsa_url="https://tsa.example/tsr", tsa_user="ana", tsa_pass_env="TSA_PW")
+
+    assert isinstance(built, HTTPTimeStamper)
+
+
+def test_the_scheme_check_is_not_fooled_by_case():
+    with pytest.raises(ValueError, match="unencrypted"):
+        _b(tsa_url="HTTP://tsa.example/tsr", tsa_header=["X-Api-Key: abc123"])
+    assert isinstance(_b(tsa_url="HTTPS://tsa.example/tsr",
+                         tsa_header=["X-Api-Key: abc123"]), HTTPTimeStamper)
+
+
+def test_credentials_hidden_in_the_url_do_not_slip_past():
+    """They never touch --tsa-user or --tsa-header, so a guard that only looked at those waved
+    them through while requests sent them exactly the same way."""
+    with pytest.raises(ValueError, match="credentials in it"):
+        _b(tsa_url="http://ana:secreta@tsa.example/tsr")
+
+
+def test_a_username_alone_in_the_url_counts_too():
+    with pytest.raises(ValueError, match="credentials in it"):
+        _b(tsa_url="http://ana@tsa.example/tsr")
+
+
+def test_credentials_in_the_url_are_refused_even_over_https():
+    """TLS protects them in transit and nothing protects them at rest. A URL on the command line
+    is in argv, in /proc, in the shell history and in whatever CI logs, which is the exposure
+    --tsa-pass-env exists to avoid. This module promises that passwords are never taken on the
+    command line, and half-keeping that promise is worse than not making it."""
+    with pytest.raises(ValueError, match="argv"):
+        _b(tsa_url="https://ana:secreta@tsa.example/tsr")
+
+
+# --- redirects ----------------------------------------------------------------
+
+def _tsa_server(handler_cls):
+    """A throwaway HTTP server on localhost, returned with its port."""
+    import http.server
+    import threading
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), handler_cls)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def test_a_redirect_is_refused_and_the_headers_never_arrive():
+    """requests follows redirects by default and carries request headers along. It drops
+    Authorization when a redirect downgrades https to http, and keeps everything else, so a TSA
+    answering 302 could walk an --tsa-header-env secret into plaintext. Checking the scheme of
+    the URL the user typed does not help: by the time the final URL is known, the secret is
+    already at it.
+    """
+    import asyncio
+    import http.server
+
+    from asn1crypto import tsp
+
+    seen_at_destination = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            if self.path == "/secure":
+                self.send_response(302)
+                self.send_header("Location", "/plain")
+                self.end_headers()
+                return
+            seen_at_destination.update({k.lower(): v for k, v in self.headers.items()})
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    from firmauy.signing import _NoRedirectTimeStamper
+
+    srv = _tsa_server(Handler)
+    try:
+        # The subclass directly, not through _build_timestamper, which would refuse a header over
+        # http before this layer is reached. Two independent defences deserve separate tests: the
+        # scheme guard covers the URL the user typed, and this one covers where it sends them.
+        stamper = _NoRedirectTimeStamper(f"http://127.0.0.1:{srv.server_port}/secure",
+                                         headers={"X-Api-Key": "s3cret-key"})
+        req = tsp.TimeStampReq({
+            "version": 1,
+            "message_imprint": tsp.MessageImprint({
+                "hash_algorithm": {"algorithm": "sha256"},
+                "hashed_message": b"\x00" * 32,
+            }),
+        })
+        with pytest.raises(Exception, match="redirect"):
+            asyncio.run(stamper.async_request_tsa_response(req))
+    finally:
+        srv.shutdown()
+
+    assert "x-api-key" not in seen_at_destination, "the secret reached the redirect target"
+
+
+def test_the_builder_returns_a_timestamper_that_refuses_redirects():
+    """A guard that lives in a subclass is only worth what the factory returns."""
+    from firmauy.signing import _NoRedirectTimeStamper
+
+    assert isinstance(_b(tsa_url="https://tsa.example/tsr"), _NoRedirectTimeStamper)
+
+
+def test_empty_userinfo_is_still_userinfo():
+    """`https://:@host/` parses to empty strings rather than None, so a truth test waves it
+    through while requests still reads it as credentials."""
+    with pytest.raises(ValueError, match="credentials in it"):
+        _b(tsa_url="https://:@tsa.example/tsr")
+
+
+def test_a_url_that_is_not_http_is_refused_here(monkeypatch):
+    """Rejected at the option rather than several layers down inside requests, where the same
+    mistake comes back as a connection error that names neither the option nor the fix."""
+    for url in ("ftp://tsa.example/t", "file:///etc/passwd", "not-a-url"):
+        with pytest.raises(ValueError, match="http:// or https://"):
+            _b(tsa_url=url)
+
+
+def test_a_url_without_a_host_is_refused():
+    with pytest.raises(ValueError, match="no host"):
+        _b(tsa_url="https:///sinhost")

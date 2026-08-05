@@ -171,3 +171,30 @@ def test_output_path_for_rejects_an_unknown_type(tmp_path):
 
     with pytest.raises(ValueError):
         output_path_for(tmp_path / "x.pdf", sign_as="pkcs7")
+
+
+def test_the_access_control_error_is_reachable_from_the_public_api():
+    """The module promises the precise exceptions are importable from here, and a caller cannot
+    catch what it cannot name."""
+    from firmauy import api
+    from firmauy.errors import OutputAccessControlError
+
+    assert api.OutputAccessControlError is OutputAccessControlError
+
+
+def test_the_committed_output_error_is_reachable_from_the_public_api():
+    """Same promise as every other precise exception: a caller cannot catch what it cannot name,
+    and this is the one that means the file exists and must not be signed again."""
+    from firmauy import api
+    from firmauy.errors import OutputCommittedError
+
+    assert api.OutputCommittedError is OutputCommittedError
+
+
+def test_the_post_sign_verification_error_is_reachable_from_the_public_api():
+    """It carries the difference between "delete this and sign again" and "do not sign again,
+    look at it", which a caller cannot act on without being able to name the class."""
+    from firmauy import api
+    from firmauy.errors import PostSignVerificationError
+
+    assert api.PostSignVerificationError is PostSignVerificationError

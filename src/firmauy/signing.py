@@ -11,12 +11,16 @@ prints or exits. Warnings and notes are reported through an optional ``notify`` 
 travel on the yielded ``_SigningContext`` for the caller to print, and the PIN arrives
 directly (``pin``) or lazily (``pin_provider``), never via a prompt of its own."""
 
+import errno
 import os
+import secrets
+import stat
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, NamedTuple, Optional
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 import pkcs11
 import pkcs11.exceptions
@@ -46,7 +50,10 @@ from firmauy.cert_utils import (
 from firmauy.errors import (
     CertificateNotValidError,
     IncorrectPinError,
+    OutputAccessControlError,
+    OutputCommittedError,
     OutputExistsError,
+    PostSignVerificationError,
     PinError,
     PinLockedError,
 )
@@ -138,8 +145,16 @@ def _card_connection(reader_name=None):
 def _resolve_final_pin(pin, pin_provider) -> str:
     """Resolve the PIN at the point of use (after the PIN-free certificate read, so the card's
     retry-limit guard is preserved): a directly-supplied ``pin``, else the lazy ``pin_provider()``
-    callback (the CLI wraps its --pin-source handling in one). Rejects an empty PIN before it can
-    reach the card."""
+    callback (the CLI wraps its --pin-source handling in one).
+
+    Rejects anything the cédula cannot accept, before it can reach the card. A wrong PIN is not
+    free: it spends one of a handful of tries and enough of them block the card, so a typo that
+    puts a letter in the string is worth catching here rather than at the price of an attempt.
+
+    Both backends come through this function, which is why the check lives here and not in either
+    one. The native path checked the length and the encoding and let letters through, while
+    telling the user in the same breath that a PIN must be digits.
+    """
     if pin is None and pin_provider is None:
         raise RuntimeError("no PIN was supplied: pass pin= or pin_provider=")
     final = pin if pin is not None else pin_provider()
@@ -147,6 +162,18 @@ def _resolve_final_pin(pin, pin_provider) -> str:
         raise PinError(
             "Empty PIN received; aborting before contacting the card "
             "(an empty PIN would still count toward its retry limit)."
+        )
+    # isascii() as well as isdigit(): the latter is true for '٤' and '④', which the card would
+    # never accept and which encoding to ASCII would reject one layer down, after the guard.
+    if not (final.isascii() and final.isdigit()):
+        raise PinError(
+            "The cédula's PIN is digits only; aborting before contacting the card "
+            "(a wrong PIN would still count toward its retry limit)."
+        )
+    if not 4 <= len(final) <= 8:
+        raise PinError(
+            f"The cédula's PIN is 4 to 8 digits, got {len(final)}; aborting before contacting "
+            "the card (a wrong PIN would still count toward its retry limit)."
         )
     return final
 
@@ -259,9 +286,68 @@ def _native_signing_session(*, reader, pin=None, pin_provider=None):
         )
 
 
+# Retries on a name collision. With 64 random bits a collision is not a real event; the loop
+# is here so an exhausted namespace fails loudly instead of spinning.
+_STAGING_ATTEMPTS = 8
+
 _SENSITIVE_HEADERS = frozenset({
     "authorization", "proxy-authorization", "x-api-key", "api-key", "x-auth-token", "x-auth",
 })
+
+
+class _NoRedirectTimeStamper(HTTPTimeStamper):
+    """A timestamper that refuses to follow redirects.
+
+    pyHanko's ``HTTPTimeStamper`` posts with requests' default, which follows them. requests drops
+    ``Authorization`` when a redirect downgrades https to http, and keeps every other header, so a
+    TSA answering 302 could walk an ``X-Api-Key`` from --tsa-header-env straight into plaintext.
+    Checking the scheme of the URL the user gave does not help: by the time the final URL is
+    known, the secret has already been sent to it.
+
+    Refused for every request, not only credentialed ones. RFC 3161 is a POST to a fixed endpoint,
+    a TSA that redirects is doing something unusual, and following a POST redirect is precisely
+    how a request ends up somewhere nobody named. A real relocation is worth a config change, not
+    a silent hop.
+
+    Overriding this means restating the parent's body, which is a maintenance cost taken
+    deliberately: the alternative is leaving the guarantee to a default we do not control.
+    """
+
+    async def async_request_tsa_response(self, req):
+        from asyncio import to_thread
+
+        import requests
+        from asn1crypto import tsp
+        from pyhanko.sign.timestamps.common_utils import TimestampRequestError
+
+        def task():
+            try:
+                raw_res = requests.post(
+                    self.url,
+                    req.dump(),
+                    headers=self.request_headers(),
+                    auth=self.auth,
+                    timeout=self.timeout,
+                    allow_redirects=False,
+                )
+            except OSError as exc:
+                raise TimestampRequestError(
+                    "Error in communication with timestamp server",
+                ) from exc
+            if raw_res.is_redirect or raw_res.is_permanent_redirect:
+                raise TimestampRequestError(
+                    f"The timestamp server answered {raw_res.status_code} (a redirect) instead of "
+                    "a timestamp. Refusing to follow it: a redirect can carry request headers, "
+                    "credentials among them, to a destination nobody asked for, and can downgrade "
+                    "to plain HTTP on the way. Point --tsa-url at the endpoint directly."
+                )
+            if raw_res.headers.get("Content-Type") != "application/timestamp-reply":
+                raise TimestampRequestError(
+                    "Timestamp server response is malformed.", raw_res
+                )
+            return tsp.TimeStampResp.load(raw_res.content)
+
+        return await to_thread(task)
 
 
 def _build_timestamper(
@@ -331,7 +417,53 @@ def _build_timestamper(
             )
         headers[name.strip()] = val
 
-    return HTTPTimeStamper(tsa_url, auth=auth, headers=headers or None)
+    # Credentials require TLS. An anonymous timestamp over http is a defensible choice: the token
+    # is signed, so a passive observer learns a hash and can change nothing. A subscriber password
+    # or an API key over http is a different matter, because it travels in the clear to whoever is
+    # on the path and is reusable once taken. Refused rather than warned about, since a warning
+    # scrolls past and the credential is already spent by then.
+    #
+    # The URL is parsed rather than searched for a flag, because credentials do not only arrive
+    # through the flags: `http://user:pass@tsa/` carries them in the authority and reaches
+    # requests exactly the same way, so a check that only looked at `auth` and `headers` waved it
+    # through. A secret hidden in a query parameter cannot be told apart from any other parameter
+    # and is not covered; that limit is documented beside --tsa-url.
+    split = urlsplit(tsa_url)
+
+    # Rejected here rather than several layers down inside requests, where the same mistake comes
+    # back as a connection error that names neither the option nor the fix.
+    if split.scheme.lower() not in ("http", "https"):
+        raise ValueError(
+            f"--tsa-url must be an http:// or https:// URL, got {tsa_url!r}. An RFC 3161 TSA "
+            "speaks HTTP."
+        )
+    if not split.hostname:
+        raise ValueError(f"--tsa-url has no host: {tsa_url!r}.")
+
+    # Credentials in the URL are refused outright, https or not. TLS would protect them in
+    # transit and nothing protects them at rest: a URL passed on the command line is in argv, in
+    # /proc, in the shell history and in whatever logs the shell or CI keeps. That is the exact
+    # exposure --tsa-pass-env and --tsa-header-env exist to avoid, and this module already
+    # promises above that passwords are never taken on the command line. Half-keeping a promise
+    # is worse than not making it.
+    #
+    # ``is not None`` and not a truth test: `https://:@host/` parses to empty strings rather than
+    # None, which is userinfo all the same and which a truth test waves through.
+    if split.username is not None or split.password is not None:
+        raise ValueError(
+            "Refusing a TSA URL with credentials in it: a URL on the command line lands in argv, "
+            "/proc and the shell history, where TLS does not reach. Use --tsa-user with "
+            "--tsa-pass-env, or --tsa-header-env, which read the secret from the environment."
+        )
+
+    if (auth or headers) and split.scheme.lower() != "https":
+        raise ValueError(
+            "Refusing to send TSA credentials over an unencrypted connection. Use an https:// "
+            "TSA URL, or drop --tsa-user / --tsa-pass-env / --tsa-header / --tsa-header-env to "
+            "request an anonymous timestamp."
+        )
+
+    return _NoRedirectTimeStamper(tsa_url, auth=auth, headers=headers or None)
 
 
 def _check_backend_options(*, native, reader, pkcs11_lib, token_label, cert_id,
@@ -379,18 +511,404 @@ def _check_backend_options(*, native, reader, pkcs11_lib, token_label, cert_id,
         )
 
 
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    """Write ``data`` to ``path`` atomically: write a sibling ``.part`` then os.replace() it into
-    place. os.replace() *replaces* an output symlink with the file instead of writing through it (so
-    a pre-existing symlink at ``path`` cannot redirect the bytes elsewhere), and an interrupted write
-    never leaves a truncated file at ``path`` -- the same guarantees the PDF signing path relies on."""
-    tmp = path.with_name(path.name + ".part")
+def _open_staging(path: Path):
+    """Create a private, unpredictably named staging file beside ``path``: ``(fd, Path)``.
+
+    Not ``tempfile.mkstemp``, and the difference is the mode. mkstemp creates at 0600, which
+    ``os.replace`` would then impose on every signed document, so restoring the ordinary
+    permissions meant reading the umask, and reading it means setting it: ``os.umask(0)`` followed
+    by putting it back. That mutates process-global state for an instant, and any other thread
+    creating a file in that instant gets it wide open. firmauy starts no threads, but it is a
+    library and can be called from a program that does.
+
+    Passing the mode to ``os.open`` instead lets the kernel apply the umask atomically, which is
+    what an ordinary create does and what the plain ``write_bytes`` this replaced produced. No
+    global state is touched and there is no window to lose.
+
+    ``O_EXCL`` is the other half: it refuses to open anything that already exists, symlink
+    included. The predictable ``<name>.part`` this replaces was a target, since ``os.replace``
+    guards the destination and the staging path had no guard at all.
+
+    The name does not embed the output's, which would be friendlier to read in a stray leftover
+    and costs too much: it added 23 bytes to a basename that may already be near the filesystem's
+    limit, so a perfectly legal 233-byte output name failed with ENAMETOOLONG on a path that could
+    hold 255. A fixed-length name signs anything the filesystem can name.
+    """
+    for _ in range(_STAGING_ATTEMPTS):
+        tmp = path.with_name(f".firmauy-{secrets.token_hex(8)}.part")
+        try:
+            return os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666), tmp
+        except FileExistsError:
+            continue
+    raise OSError(f"could not create a staging file next to {path}")
+
+
+# The POSIX access ACL, as the kernel exposes it to getxattr/setxattr.
+_ACL_XATTR = "system.posix_acl_access"
+
+# Three outcomes, kept apart. Collapsing them into None left "the file had no ACL", "this
+# filesystem has no ACLs" and "reading the ACL failed" indistinguishable, and only the first two
+# say anything about what should be restored.
+_ACL_ABSENT = "absent"
+_ACL_UNSUPPORTED = "unsupported"
+
+# errno for "no such attribute". Linux says ENODATA, the BSDs ENOATTR, and Python only defines the
+# second where the platform has it.
+_NO_SUCH_ATTR = {errno.ENODATA, getattr(errno, "ENOATTR", errno.ENODATA)}
+_NO_ACL_SUPPORT = {errno.ENOTSUP, errno.EOPNOTSUPP}
+
+
+class _Replaced(NamedTuple):
+    """What a regular file being replaced should hand to the file replacing it."""
+
+    mode: int
+    uid: int
+    gid: int
+    acl: object                 # bytes, _ACL_ABSENT or _ACL_UNSUPPORTED
+
+
+# Something is at the path, but not a file whose access control could be adopted: a symlink
+# (ELOOP, and EMLINK where a BSD reports O_NOFOLLOW that way) or a device with nothing behind it.
+# The same answer a directory or a FIFO gets from the S_ISREG check below, reached earlier.
+_NOT_ADOPTABLE = {errno.ELOOP, getattr(errno, "EMLINK", errno.ELOOP), errno.ENXIO, errno.ENODEV}
+
+
+class _Moved(Exception):
+    """Internal. The file's own access control was rewritten while it was being read, or the path
+    stopped pointing at it. Nothing read is usable, and :func:`_adopt_replaced` starts over."""
+
+
+def _unreadable(path: Path, exc: OSError) -> OutputAccessControlError:
+    """The one sentence every failure to read the replaced file's access control ends in."""
+    return OutputAccessControlError(
+        f"Could not read the access control of {path.name} ({exc.strerror}), so replacing it "
+        "could publish a document readable by a different set of people. Nothing was changed.",
+        path=path,
+    )
+
+
+def _capture_replaced(path: Path) -> Optional[_Replaced]:
+    """The access control of the file about to be replaced, or None when there is no such file.
+
+    **Read through a descriptor, not a pathname.** A pathname is a lookup, not a handle: ask twice
+    and the answers can describe two different files, and mode from one with an ACL from another
+    published a document at 0644 over a file that was 0600 (measured). Two lookups cannot be made
+    safe by comparing them either, because an entry taken away and put back leaves the comparison
+    equal. That was the previous design, and it leaned on ``rename`` rewriting the inode's ctime,
+    which POSIX explicitly declines to require: "Some implementations mark for update the last
+    file status change timestamp of renamed files and some do not." Opening once and reading
+    everything from that descriptor makes the question moot rather than unlikely.
+
+    Opened ``O_NOFOLLOW`` because a symlink planted at the output is not the file being replaced
+    and has nothing to say about what the result should allow, and ``O_NONBLOCK`` because opening
+    a FIFO for reading otherwise waits for a writer that never comes, hanging the signature at the
+    commit. Anything not a regular file is nothing to preserve.
+
+    The price is read permission, which replacing a file never needed, so a file whose own owner
+    has made it unreadable now fails instead of being overwritten. That is the trade taken
+    knowingly: refusing is recoverable with one ``chmod`` and says what happened, while the
+    alternative publishes access control assembled from two files and says nothing.
+
+    An unreadable ACL is an error rather than an assumption. Guessing "absent" there would restore
+    absence onto a file that may have had one, which is a decision about who may read a document
+    and not a detail to paper over.
+    """
     try:
-        tmp.write_bytes(data)
-        os.replace(tmp, path)
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno in _NOT_ADOPTABLE:
+            return None
+        failure = _unreadable(path, exc)
+        if exc.errno in (errno.EACCES, errno.EPERM):
+            failure.args = (f"{failure.args[0]} If the file is yours and simply unreadable, "
+                            "`chmod u+r` it and sign again.",)
+        raise failure from exc
+
+    try:
+        return _read_replaced(fd, path)
+    finally:
+        os.close(fd)
+
+
+def _read_replaced(fd: int, path: Path) -> Optional[_Replaced]:
+    """Everything :class:`_Replaced` holds, off one open descriptor, or None for nothing to adopt.
+
+    Bracketed by two ``fstat`` calls on that same descriptor. They cannot land on different files,
+    so the only thing they can disagree about is this file's own access control being rewritten
+    mid-read, and ctime is what shows that. Unlike the ``rename`` case this design used to lean
+    on, POSIX does require ``chmod`` and ``chown`` to mark it for update, but a timestamp is still
+    only as sharp as the filesystem storing it: what this catches is an ordinary concurrent change,
+    subject to that resolution.
+
+    So the limit worth stating plainly. The descriptor guarantees that owner, group, mode and ACL
+    describe one inode. It is not an atomic snapshot of that inode against somebody already
+    entitled to rewrite its access control: change the ACL, let it be read, change it back, and
+    where the clock cannot separate the two the read stands. Reading the ACL a second time would
+    catch more accidents and still not close that, because it is the same shape of race one syscall
+    further along. POSIX offers no atomic read of stat and ACL together, so this is where the line
+    is, and it is drawn rather than papered over.
+
+    Then, still holding the descriptor, the path must lead back to this inode. Otherwise what was
+    read is a perfectly coherent description of a file that is no longer the one being replaced.
+
+    Every syscall here is wrapped, because a caller catching :class:`OutputAccessControlError` is
+    entitled to the same answer whether the access control could not be read or could not be
+    trusted. Failing closed while escaping as a bare ``OSError`` is still a broken contract.
+    """
+    try:
+        current = os.fstat(fd)
+    except OSError as exc:
+        raise _unreadable(path, exc) from exc
+    if not stat.S_ISREG(current.st_mode):
+        return None
+
+    try:
+        acl = os.getxattr(fd, _ACL_XATTR)
+    except AttributeError:
+        acl = _ACL_UNSUPPORTED          # no xattr API on this platform at all
+    except OSError as exc:
+        if exc.errno in _NO_SUCH_ATTR:
+            acl = _ACL_ABSENT
+        elif exc.errno in _NO_ACL_SUPPORT:
+            acl = _ACL_UNSUPPORTED
+        else:
+            raise _unreadable(path, exc) from exc
+
+    try:
+        again = os.fstat(fd)
+    except OSError as exc:
+        raise _unreadable(path, exc) from exc
+    if (again.st_ctime_ns, again.st_mode, again.st_uid, again.st_gid) != (
+            current.st_ctime_ns, current.st_mode, current.st_uid, current.st_gid):
+        raise _Moved
+
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        raise _Moved from None
+    except OSError as exc:
+        raise _unreadable(path, exc) from exc
+    if (entry.st_dev, entry.st_ino) != (current.st_dev, current.st_ino):
+        raise _Moved
+
+    return _Replaced(mode=stat.S_IMODE(current.st_mode) & 0o777,
+                     uid=current.st_uid, gid=current.st_gid, acl=acl)
+
+
+def _restore_replaced(fd: int, replaced: _Replaced, path: Path) -> None:
+    """Carry the replaced file's access control onto the descriptor that will replace it.
+
+    An atomic replace swaps an *inode*, not the bytes inside one, so everything the old inode
+    carried is gone unless it is put back. Mode alone is not that: a file can read 0640 before and
+    after and still be readable by different people, because the owner or group changed, or
+    because the new inode inherited a default ACL from the directory that the old one never had.
+    All three were measured, all three widened access silently, and all three look identical to
+    ``stat``.
+
+    **Every failure here aborts.** This runs before the commit, so raising unlinks the staging
+    file and leaves the existing one exactly as it was: nothing is published with access controls
+    that do not match what it replaced. Swallowing them and carrying on was worse than not trying,
+    because it produced a document whose mode digits looked preserved while the people they
+    applied to had changed.
+
+    What is deliberately not carried: ``user.*`` attributes, capabilities and ``security.*``. A
+    blanket ``copystat`` would move all of them, and quietly transplanting a capability or a
+    security label onto a document this program just produced is not something anybody asked for.
+    Preserving nothing there is a decision, and this is where it is written down.
+    """
+    try:
+        os.fchown(fd, replaced.uid, replaced.gid)
+    except AttributeError:
+        pass                            # a platform without POSIX ownership
+    except OSError as exc:
+        raise OutputAccessControlError(
+            f"{path.name} belongs to uid {replaced.uid} / gid {replaced.gid} and this process "
+            f"cannot give the replacement the same ({exc.strerror}). Its mode would have been "
+            "restored onto a different owner or group, which changes who can read it. Nothing "
+            "was changed. Write to a path you own, or adjust the ownership first.",
+            path=path,
+        ) from exc
+
+    if replaced.acl is _ACL_UNSUPPORTED:
+        return                          # nothing to restore, nothing could have been inherited
+
+    try:
+        if replaced.acl is _ACL_ABSENT:
+            os.removexattr(fd, _ACL_XATTR)
+        else:
+            os.setxattr(fd, _ACL_XATTR, replaced.acl)
+    except AttributeError:
+        pass
+    except OSError as exc:
+        if replaced.acl is _ACL_ABSENT and exc.errno in _NO_SUCH_ATTR:
+            return                      # the ordinary case: nothing was inherited to remove
+        raise OutputAccessControlError(
+            f"Could not give the replacement for {path.name} the same ACL it had "
+            f"({exc.strerror}), so publishing it could allow a different set of people. Nothing "
+            "was changed.",
+            path=path,
+        ) from exc
+
+
+# How many times to start over when the file moves mid-read. Each attempt is a handful of
+# syscalls, so this is not a spin loop: it is there so an ordinary concurrent write does not cost
+# a signature, and it gives up rather than chasing something that keeps rewriting the path.
+_ADOPT_ATTEMPTS = 4
+
+
+def _adopt_replaced(fd: int, path: Path) -> Optional[_Replaced]:
+    """Carry the access control at *path* onto *fd*, or return None when there is nothing to carry.
+
+    Two responsibilities, and keeping them apart is the point. :func:`_capture_replaced` decides
+    what should be adopted and refuses to answer at all if it could not read it coherently. This
+    decides what to do when it refuses, which is to start over, a bounded number of times, and
+    then give up rather than publish.
+
+    **A discarded attempt leaves the staging file untouched.** Nothing is applied until a capture
+    has been accepted. Restoring inside the loop was measured leaking across attempts: the first
+    attempt copied an ACL granting a third party read access, the file then vanished, the second
+    attempt found nothing to preserve and so restored nothing, and the ACL from the discarded
+    attempt was published on a file that never had one. Restoring overwrites owner, group and ACL,
+    so any accepted attempt covers what an earlier one did, but the attempt that captures nothing
+    has nothing to overwrite it with, which was the whole bug.
+
+    A refused capture now raises rather than returning something to inspect, so the ordering here
+    is no longer what prevents that. Kept anyway: an invariant worth having is worth not resting
+    on one exception type staying an exception.
+
+    What stays open is the gap between the accepted capture and the commit, a few syscalls wide.
+    Closing that needs cooperative locking, which a program writing to a path the user chose is in
+    no position to demand of whoever else writes there.
+    """
+    for _ in range(_ADOPT_ATTEMPTS):
+        try:
+            replaced = _capture_replaced(path)
+        except _Moved:
+            continue
+        break
+    else:
+        raise OutputAccessControlError(
+            f"{path.name} kept changing while its access control was being read, so the signature "
+            "would have carried permissions belonging to a file that is no longer there. Nothing "
+            "was changed.",
+            path=path,
+        )
+
+    if replaced is not None:
+        _restore_replaced(fd, replaced, path)
+    return replaced
+
+
+@contextmanager
+def _staged_output(path: Path, *, overwrite: bool = True):
+    """Yield an open file beside ``path``, then atomically move it into place.
+
+    Four properties, each against a different failure.
+
+    **Private while it holds data.** The staging file is created 0666 so the kernel applies the
+    umask, that mode is read straight back off the descriptor, and the file is then narrowed to
+    0600 before a single byte is written. Only at commit does it get the mode the result should
+    carry. Without that narrowing the staging file sat at 0644 for the whole signing operation
+    while holding, for a PDF, essentially the entire document: unpredictable names stop somebody
+    planting a file there, and do nothing about somebody watching the directory and reading one.
+
+    **Atomic, and not through a symlink.** Both commits put a fully written file in place in one
+    step and neither writes through a link pre-created at ``path``: ``os.replace`` puts the file
+    where the symlink was, and ``os.link`` refuses outright because the name is taken. A crash or
+    an exception part-way never leaves a truncated file at ``path``. The staging file is fsynced
+    before the commit, so the bytes are on the medium before the name points at them, though
+    durability of the directory entry itself would need the directory fsynced too and is not
+    promised here. Same directory on purpose: neither call is atomic across filesystems, and a
+    temp directory elsewhere would silently become a copy.
+
+    **No clobber unless asked.** With ``overwrite=False`` the commit is ``os.link``, which fails
+    with ``FileExistsError`` if anything is already there. The callers' early ``path.exists()``
+    check is for a clear message before the card is touched; it cannot be the guarantee, because
+    reading a certificate, entering a PIN and reaching a TSA all happen between it and the write,
+    and anything appearing in that window used to be destroyed silently. ``os.link`` also refuses
+    a dangling symlink, which ``exists()`` reports as absent.
+
+    **Deliberate access control.** Overwriting preserves the replaced file's POSIX discretionary
+    access control, meaning owner, group, mode and access ACL: four things, not merely the mode
+    digits, because a file can read 0640 before and after and still be readable by different
+    people. Everything outside that is deliberately not carried, including ``security.*``, SELinux
+    labels, capabilities and non-POSIX ACLs, and :func:`_restore_replaced` says why. It is applied
+    through the open descriptor rather than by name, so it lands on the file that was written and
+    not on whatever answers to that path by then, and all four are read the same way, off one
+    descriptor held open on the file being replaced, so they cannot describe two different files.
+
+    What none of this can survive is an adversary who can freely replace entries in the output
+    directory. That is a property of the directory, not of this function: on a shared one, want
+    the sticky bit.
+
+    Yields the open file rather than a raw descriptor, and owns closing it. Handing back a
+    descriptor made every caller responsible for a close they could skip by raising first, which
+    leaked it onto a file already unlinked.
+    """
+    fd, tmp = _open_staging(path)
+    try:
+        # What an ordinary create would have produced, captured before narrowing, so a new file
+        # still ends up with the umask's answer without the umask ever being read or set.
+        fresh = stat.S_IMODE(os.fstat(fd).st_mode) & 0o777
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb", closefd=False) as out:
+            yield out
+            out.flush()
+            os.fsync(fd)
+
+        # Read here and not before the signature, because "the file being replaced" is whatever
+        # is there at the commit, and signing takes seconds: a card, a PIN, sometimes a TSA. A
+        # capture taken up front described a file that may since have been replaced by a more
+        # private one, and reapplying the old mode published the document wider than the thing it
+        # overwrote. Only for a replacing commit: os.link refuses a name that is taken, so the
+        # other path has nothing to preserve by definition.
+        replaced = _adopt_replaced(fd, path) if overwrite else None
+        # Narrow again: applying an ACL rewrites the mode bits it encodes, and the file must
+        # still be private when it becomes reachable by the final name.
+        os.fchmod(fd, 0o600)
+
+        if overwrite:
+            os.replace(tmp, path)
+        else:
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                raise OutputExistsError(
+                    f"{path.name} appeared while the signature was being made. Not overwriting "
+                    "it. Use --overwrite if that is what you want.",
+                    path=path,
+                ) from None
+            tmp.unlink(missing_ok=True)
+
+        # Only now, when the bytes are already in place under the right name, does anyone other
+        # than the owner get to read them. A failure here fails in the safe direction, leaving a
+        # complete document at 0600, but it is the one failure in this function that raises after
+        # the output exists, so it says so rather than looking like every other failure, which
+        # leaves nothing behind.
+        final = replaced.mode if replaced is not None else fresh
+        try:
+            os.fchmod(fd, final)
+        except OSError as exc:
+            raise OutputCommittedError(
+                f"{path.name} was signed and is in place, but its permissions could not be set to "
+                f"{oct(final)} ({exc.strerror}), so it stayed readable only by its owner. The "
+                "signing operation itself completed and the output was committed. Repair the mode "
+                "rather than signing again.",
+                path=path, final_mode=final, errno=exc.errno,
+            ) from exc
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    finally:
+        os.close(fd)
+
+
+def _atomic_write_bytes(path: Path, data: bytes, *, overwrite: bool = True) -> None:
+    """Write ``data`` to ``path`` atomically. See :func:`_staged_output` for the guarantees."""
+    with _staged_output(path, overwrite=overwrite) as out:
+        out.write(data)
 
 
 def _sign_one_pdf(
@@ -518,20 +1036,12 @@ def _sign_one_pdf(
                 ),
             )
 
-            # Sign into a sibling temp file, then atomically move it into place. A failure
+            # Sign into a private sibling temp file, then atomically move it into place. A failure
             # mid-signing (e.g. the card is pulled) then never leaves a partial/corrupt file at
             # output_pdf, and with --overwrite it never destroys the previous good output either.
-            # (The XML/CMS paths get the same guarantee via _atomic_write_bytes.)
-            # os.replace also *replaces* an output symlink with the signed file instead of writing
-            # through it, so a pre-created symlink cannot redirect the output to another location.
-            tmp_out = output_pdf.with_name(output_pdf.name + ".part")
-            try:
-                with tmp_out.open("wb") as outf:
-                    pdf_signer.sign_pdf(writer, output=outf)
-                os.replace(tmp_out, output_pdf)
-            except BaseException:
-                tmp_out.unlink(missing_ok=True)
-                raise
+            # The XML/CMS paths get the same guarantees through the same helper.
+            with _staged_output(output_pdf, overwrite=overwrite) as outf:
+                pdf_signer.sign_pdf(writer, output=outf)
 
         finally:
             if appearance_path:
@@ -581,7 +1091,7 @@ def _sign_one_xml(
         signing_time=signing_time,
         timestamper=timestamper,
     )
-    _atomic_write_bytes(output_xml, signed)
+    _atomic_write_bytes(output_xml, signed, overwrite=overwrite)
 
 
 def _sign_one_cms(
@@ -607,32 +1117,107 @@ def _sign_one_cms(
     ensure_output_parent(output_p7s)
     with input_file.open("rb") as f:
         p7s = sign_cms_detached(f, signer=pkcs11_signer, timestamper=timestamper)
-    _atomic_write_bytes(output_p7s, p7s)
+    _atomic_write_bytes(output_p7s, p7s, overwrite=overwrite)
 
 
-def _check_post_sign(result) -> None:
-    """Raise if a post-sign verification result has any failed check."""
+def _check_post_sign(result, output: Path, *, covers: Optional[Path] = None) -> None:
+    """Raise if a post-sign verification result has any failed check.
+
+    Names the output, because by the time this runs the file has been written and the caller is
+    about to be told only that something failed. Unlike every other failure on this path it is
+    not a signature worth keeping, so saying it exists is what lets somebody delete it instead of
+    finding it later and trusting it.
+
+    ``covers`` is the separate file a detached signature is over, when there is one. It changes
+    what a failure is allowed to claim: with the bytes inside the output there is one explanation,
+    and with the bytes in somebody else's file there are two, since that file may simply not be
+    the one that was signed any more. Saying "not intact" there would name the wrong culprit and
+    send somebody to sign whatever the file now contains.
+    """
     failed = [c for c in result.checks if not c.ok]
     if failed:
         detail = "; ".join(c.name + (f" ({c.detail})" if c.detail else "") for c in failed)
-        raise RuntimeError(
-            f"post-sign verification failed (the produced signature is not intact): {detail}"
+        if covers is None:
+            raise PostSignVerificationError(
+                "post-sign verification failed (the produced signature is not intact): "
+                f"{detail}. {output.name} is on disk and should not be used: delete it and "
+                "sign again.",
+                path=output, outcome="failed",
+            )
+        # A different outcome, and not a nicety: "failed" is documented as delete and sign again,
+        # and doing that here would sign whatever the covered file holds now. The message already
+        # said this cannot tell the two explanations apart, so the field has to say it too, or a
+        # program reading the field does the thing the prose warns against.
+        raise PostSignVerificationError(
+            f"post-sign verification failed: {output.name} does not verify against "
+            f"{covers.name} as it is now ({detail}). Either the signature is not intact "
+            f"or {covers.name} changed after it was signed, and this cannot tell which. "
+            f"{output.name} is on disk and should not be used. Check whether "
+            f"{covers.name} is still the file you meant to sign before signing it again.",
+            path=output, outcome="detached-mismatch", covers=covers,
         )
+
+
+@contextmanager
+def _post_sign(output: Path):
+    """Everything the self-check does, with the two ways of not confirming a signature kept apart.
+
+    ``_check_post_sign`` only speaks when the verifier produced a result and something in it was
+    false. Getting that far is not guaranteed: the verifier can raise, the file can fail to read
+    back, the result list can come back empty. All of those used to escape as whatever the
+    underlying library felt like raising, which said nothing about the fact that a file had been
+    written and left the caller with a document of unknown standing and no way to tell that from
+    an ordinary failure.
+
+    That is one of three outcomes, and the one this wrapper is responsible for. The other two
+    come from the check itself having produced a result: a self-contained signature found not
+    intact, and a detached pair that no longer matches. See
+    :class:`~firmauy.errors.PostSignVerificationError` for what each one asks of a caller.
+    """
+    try:
+        yield
+    except PostSignVerificationError:
+        raise
+    except Exception as exc:
+        raise PostSignVerificationError(
+            f"the post-sign verification could not be completed ({exc}). {output.name} is on "
+            "disk and nothing is known about the signature in it: do not use it, and check it "
+            "before signing again, which would only add a second signature to it.",
+            path=output, outcome="inconclusive",
+        ) from exc
 
 
 def _verify_after_pdf(output_pdf: Path) -> None:
     # Only the signature we just appended (the last one); integrity + coverage, no trust.
-    _check_post_sign(verify_pdf(output_pdf, trust_roots=None)[-1])
+    with _post_sign(output_pdf):
+        _check_post_sign(verify_pdf(output_pdf, trust_roots=None)[-1], output_pdf)
 
 
 def _verify_after_xml(output_xml: Path) -> None:
     # Only the signature we just appended (the last one); integrity, no trust.
-    _check_post_sign(verify_xml(output_xml.read_bytes(), trust_roots=None)[-1])
+    with _post_sign(output_xml):
+        _check_post_sign(verify_xml(output_xml.read_bytes(), trust_roots=None)[-1], output_xml)
 
 
 def _verify_after_cms(input_file: Path, output_p7s: Path) -> None:
-    with input_file.open("rb") as data:
-        _check_post_sign(verify_cms(data, output_p7s.read_bytes(), trust_roots=None))
+    """The CAdES self-check, which is the one that cannot say what the other two can.
+
+    A detached signature covers bytes that live in another file, and this re-opens that file by
+    pathname to compare against it. Signing streamed the original through one descriptor and this
+    opens a second one, so what is checked is the original *as it is now*. If it changed in
+    between, the ``.p7s`` can be a perfectly good signature over what was actually signed and this
+    still reports a mismatch, which is why the message says a mismatch rather than a corrupt
+    signature. PDF and XAdES have nothing to compare against: their check reads the output alone.
+
+    Closing that properly means verifying through the same descriptor the signature was made
+    from, which means the check has to happen inside :func:`_sign_one_cms` while it is still open.
+    That is a change to how every caller sequences signing and verifying, and it is not this
+    release's.
+    """
+    with _post_sign(output_p7s):
+        with input_file.open("rb") as data:
+            _check_post_sign(verify_cms(data, output_p7s.read_bytes(), trust_roots=None),
+                             output_p7s, covers=input_file)
 
 
 def _detect_input_kind(path: Path) -> str:

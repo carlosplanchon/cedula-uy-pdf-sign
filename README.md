@@ -177,7 +177,7 @@ examples for every command are in the **[usage guide](docs/usage.md)**, and task
 | Command | Description |
 |---|---|
 | `doctor` | Diagnose the local environment (pcscd, PKCS#11 module, card, CAs). `--native` checks the PC/SC path native signing uses |
-| `fetch-cas` | Optional: refresh the bundled national CA certificates from the network |
+| `fetch-cas` | Optional: re-fetch the currently pinned national CA certificates into a per-user cache. A rotated CA needs a new release, or `--ca-file` |
 
 ## Use as a library
 

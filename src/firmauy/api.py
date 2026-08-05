@@ -35,7 +35,10 @@ from firmauy.errors import (
     DetachedOriginalRequiredError as DetachedOriginalRequiredError,
     FirmaUYError as FirmaUYError,
     IncorrectPinError as IncorrectPinError,
+    OutputAccessControlError as OutputAccessControlError,
+    OutputCommittedError as OutputCommittedError,
     OutputExistsError as OutputExistsError,
+    PostSignVerificationError as PostSignVerificationError,
     PinError as PinError,
     PinLockedError as PinLockedError,
     ReaderNotFoundError as ReaderNotFoundError,
@@ -592,9 +595,16 @@ def sign_files(
     cause. ``output_dir`` writes the results there (flat, default name per type) instead of next to
     each input. Returns a list of :class:`SignReport`, one per input, in order.
 
-    ``progress`` is called after each output is written, with ``(index, input_path,
-    output_path)``, where ``index`` is 0-based into ``paths``. It runs on the calling thread,
-    inside the card session, so it should return quickly and must not touch the card.
+    ``progress`` is called after each input finishes, including any post-sign verification that
+    was asked for, with ``(index, input_path, output_path)``, where ``index`` is 0-based into
+    ``paths``. It runs on the calling thread, inside the card session, so it should return quickly
+    and must not touch the card.
+
+    Finishing, not merely writing: an output whose self-check failed has been written and does not
+    reach the callback, on purpose, for the same reason it is not in ``completed``. It is not
+    finished work. The one exception is
+    :class:`~firmauy.errors.OutputCommittedError`, where only the final permissions could not be
+    set: the signature is committed and the callback runs.
 
     ``should_continue`` is asked, before each file, whether to keep going; returning False raises
     :class:`BatchSignCancelled` with the same partial result. It is only consulted between files:
@@ -604,10 +614,12 @@ def sign_files(
     calling thread inside the card session, so it must return quickly and must not touch the card.
 
     Fail-fast, but not silently: the first file that fails raises :class:`BatchSignError`, whose
-    ``completed`` holds the reports for everything already written and whose ``failed_index`` and
-    ``failed_path`` say where it stopped. Those outputs stay on disk because they are real,
-    valid signatures, and a caller that can say "2 of 7 were signed and they are fine" is worth
-    much more than one that can only say it failed.
+    ``completed`` holds a report per finished output and whose ``failed_index`` and
+    ``failed_path`` say where it stopped. Those outputs stay on disk because they are real
+    signatures, and a caller that can say "2 of 7 were signed" is worth much more than one that
+    can only say it failed. The failed file can itself be in ``completed`` when the failure came
+    after its output was finished, and a file left behind by a failed post-sign verification is
+    deliberately not: see :class:`~firmauy.errors.BatchSignError` for both.
 
     .. versionchanged:: 1.11.0
        Added ``should_continue``.
@@ -667,10 +679,47 @@ def sign_files(
         pkcs11_lib=lib_path, token_label=token_label, cert_id=cert_id,
         pin=pin, pin_provider=pin_provider,
     ) as ctx:
+        def _report(out, kind, *, verified):
+            return SignReport(
+                output_path=out, signer=ctx.signer_name, issuer=ctx.issuer_name,
+                kind={"pdf": "pades", "xml": "xades", "any": "cades"}[kind],
+                backend="native" if native else "pkcs11",
+                certificate_serial=ctx.cert_serial, verified=verified,
+                pkcs11_lib=None if native else lib_path,
+            )
+
+        def _announce(index, source, out):
+            """Run the caller's progress callback. Returns what it raised, rather than letting
+            that replace this function's own account of what it did.
+
+            `progress` is the caller's code and can have bugs in it. When it does, whatever it
+            raised used to come out of here in place of everything else: the reports for files
+            already on disk, and, worse, the OutputCommittedError saying a file exists and must
+            not be signed a second time. A broken progress bar is not a reason to lose that.
+            """
+            if progress is None:
+                return None
+            try:
+                progress(index, source, out)
+            except Exception as callback_error:
+                return callback_error
+            return None
+
         for index, p in enumerate(items):
             # Asked between files, never inside one: an output is written whole or not at all,
             # so there is no point where stopping could leave a truncated signature behind.
-            if should_continue is not None and not should_continue():
+            try:
+                stop = should_continue is not None and not should_continue()
+            except Exception as callback_error:
+                # Same rule as `progress`: a callback that raises does not cost the caller the
+                # record of what was already signed.
+                raise BatchSignError(
+                    f"batch stopped before {p} (file {index + 1} of {len(items)}): the "
+                    f"should_continue callback raised {callback_error!r}",
+                    completed=reports, failed_index=index, failed_path=p,
+                    callback_error=callback_error,
+                ) from callback_error
+            if stop:
                 raise BatchSignCancelled(
                     f"batch cancelled before {p} (file {index + 1} of {len(items)}); "
                     f"{len(reports)} already signed",
@@ -711,20 +760,36 @@ def sign_files(
             except Exception as exc:
                 # Everything already written is a real signature. Hand it over rather than let it
                 # vanish with the exception: the caller needs it to say what actually happened.
+                #
+                # OutputCommittedError means this file is written too, only with the wrong mode,
+                # so it belongs in the list for exactly the same reason. Leaving it out reported
+                # that the file did not exist while it sat on disk complete, which is the one
+                # thing `completed` promises not to do. The exception stays the cause, so `path`
+                # and `final_mode` remain available to whoever repairs the mode. `verified` is
+                # False on that last report whatever `verify` asked for, because the failure
+                # happens inside the signing call and the verification step never runs.
+                callback_error = None
+                if isinstance(exc, OutputCommittedError):
+                    reports.append(_report(out, kind, verified=False))
+                    # `progress` is documented as running after each output is written, and this
+                    # output is written. Skipping it left a progress bar showing nothing done
+                    # while the file existed and `completed` already counted it.
+                    callback_error = _announce(index, p, out)
                 raise BatchSignError(
                     f"batch stopped at {p} (file {index + 1} of {len(items)}): {exc}",
                     completed=reports, failed_index=index, failed_path=p,
+                    callback_error=callback_error,
                 ) from exc
 
-            reports.append(SignReport(
-                output_path=out, signer=ctx.signer_name, issuer=ctx.issuer_name,
-                kind={"pdf": "pades", "xml": "xades", "any": "cades"}[kind],
-                backend="native" if native else "pkcs11",
-                certificate_serial=ctx.cert_serial, verified=verify,
-                pkcs11_lib=None if native else lib_path,
-            ))
-            if progress is not None:
-                progress(index, p, out)
+            reports.append(_report(out, kind, verified=verify))
+            callback_error = _announce(index, p, out)
+            if callback_error is not None:
+                raise BatchSignError(
+                    f"batch stopped after {p} (file {index + 1} of {len(items)}): the progress "
+                    f"callback raised {callback_error!r}. The signature itself was written.",
+                    completed=reports, failed_index=index, failed_path=p,
+                    callback_error=callback_error,
+                ) from callback_error
     return reports
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "firmauy"
-version = "1.13.1"
+version = "1.14.0"
 authors = [
   { name = "Carlos A. Planchón", email = "carlosplanchon@cognitialabs.com" }
 ]
@@ -13,7 +13,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 
 license = "Apache-2.0"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "NOTICE"]
 
 keywords = ["pdf", "xml", "xades", "pades", "cades", "cms", "p7s", "pkcs11", "uruguay", "agesic", "cedula", "signature", "electronic"]
 classifiers = [
@@ -53,7 +53,7 @@ where = ["src"]
 firmauy = ["data/*.pem", "data/PROVENANCE.md"]
 
 [dependency-groups]
-dev = ["pytest>=8", "signxml>=4"]
+dev = ["pytest>=8", "signxml>=4", "hypothesis>=6"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

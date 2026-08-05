@@ -218,3 +218,7 @@ clipboard/
 cedula_foto.*
 /*.jpg
 /*.jpeg
+
+# Local agent settings. Ignored here rather than only in a personal global ignore, so the
+# protection travels with the repository instead of depending on whose machine it is.
+.claude/

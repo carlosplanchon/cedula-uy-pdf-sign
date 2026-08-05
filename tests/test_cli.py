@@ -5,6 +5,8 @@ import json
 import re
 from importlib.metadata import version
 
+from unittest import mock
+
 import pytest
 
 from asn1crypto import keys as asn1keys
@@ -257,12 +259,22 @@ def test_doctor_command_json_contract():
 
 # --- --verify (post-sign self-check) ----------------------------------------
 
-def test_check_post_sign_passes_and_raises():
+def test_check_post_sign_passes_and_raises(tmp_path):
+    out = tmp_path / "salida.xml"
     # All checks ok -> no raise (post-sign self-check passes).
-    _check_post_sign(VerifyResult("INDETERMINATE", [Check("intact", True), Check("valid", True)]))
+    _check_post_sign(VerifyResult("INDETERMINATE", [Check("intact", True), Check("valid", True)]),
+                     out)
     # Any failed check -> raise (the produced signature is not intact).
-    with pytest.raises(RuntimeError, match="post-sign verification failed"):
-        _check_post_sign(VerifyResult("INVALID", [Check("intact", False, "tampered"), Check("valid", True)]))
+    from firmauy.errors import PostSignVerificationError
+    with pytest.raises(PostSignVerificationError, match="post-sign verification failed") as caught:
+        _check_post_sign(
+            VerifyResult("INVALID", [Check("intact", False, "tampered"), Check("valid", True)]),
+            out)
+    # The file was written before this ran. Saying so is what lets somebody delete it instead of
+    # finding it later and taking it for a signature.
+    assert "salida.xml is on disk" in str(caught.value)
+    assert "delete it and sign again" in str(caught.value)
+    assert caught.value.outcome == "failed" and caught.value.path == out
 
 
 def test_verify_after_cms_catches_a_broken_signature(tmp_path):
@@ -275,8 +287,13 @@ def test_verify_after_cms_catches_a_broken_signature(tmp_path):
     _verify_after_cms(doc, sig)  # intact -> no raise
 
     doc.write_bytes(b"TAMPERED content!!\n")  # mutate the bytes the signature covers
-    with pytest.raises(RuntimeError, match="not intact"):
+    from firmauy.errors import PostSignVerificationError
+    with pytest.raises(PostSignVerificationError, match="not intact") as caught:
         _verify_after_cms(doc, sig)
+    # Detached: the pair does not match, and which of the two moved is not knowable here.
+    assert caught.value.outcome == "detached-mismatch"
+    assert caught.value.covers == doc
+    assert caught.value.path == sig
 
 
 # --- verify (auto-detect) ---------------------------------------------------
@@ -510,7 +527,7 @@ def test_atomic_write_bytes_writes_and_cleans_up_temp(tmp_path):
     out = tmp_path / "o.bin"
     _atomic_write_bytes(out, b"hello")
     assert out.read_bytes() == b"hello"
-    assert not (tmp_path / "o.bin.part").exists()   # the sibling temp is gone after os.replace
+    assert list(tmp_path.iterdir()) == [out]        # the staging file is gone after os.replace
 
 
 def test_atomic_write_bytes_replaces_symlink_without_writing_through(tmp_path):
@@ -528,7 +545,7 @@ def test_atomic_write_bytes_replaces_symlink_without_writing_through(tmp_path):
     assert not link.is_symlink()                    # symlink replaced by a regular file
     assert link.read_bytes() == b"<signed/>"
     assert target.read_bytes() == b"DO NOT TOUCH"   # the symlink target was never written through
-    assert not (tmp_path / "out.xml.part").exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out.xml", "target.txt"]
 
 
 class _RecordingConn:
@@ -1448,3 +1465,1342 @@ def test_doctor_notes_options_that_do_not_apply(monkeypatch):
         r = runner.invoke(app, args)
         assert r.exit_code == 0
         assert "Note:" not in r.output
+
+
+def test_the_staging_file_is_not_a_predictable_name(tmp_path):
+    """The old staging path was `<name>.part`, which anybody could predict and pre-create.
+
+    os.replace protects the *destination* from a symlink, and the staging path had no guard at
+    all, so on a shared or world-writable directory a symlink planted at the predictable name
+    would have had the signed document written through it. mkstemp gives an unpredictable name
+    and O_EXCL, which refuses to open anything that already exists.
+    """
+    from firmauy.signing import _staged_output
+
+    out = tmp_path / "documento.pdf"
+    with _staged_output(out) as handle:
+        # What is actually on disk while the write is in flight, rather than what the helper
+        # says it is doing.
+        staged = [p.name for p in tmp_path.iterdir()]
+        handle.write(b"%PDF-1.7\n")
+
+    assert not any(n == "documento.pdf.part" for n in staged)
+    assert len(staged) == 1 and staged[0].endswith(".part")
+    # And it does not embed the output's name, which would spend the filesystem's name budget.
+    assert "documento" not in staged[0]
+    assert out.read_bytes() == b"%PDF-1.7\n"
+
+
+def test_a_symlink_planted_at_the_staging_path_cannot_capture_the_output(tmp_path):
+    """The attack the predictable name allowed, run against the current code.
+
+    The staging name is unpredictable now, so this plants a symlink at every name the old scheme
+    would have used and confirms none of them is followed and nothing lands on the target.
+    """
+    from firmauy.signing import _atomic_write_bytes
+
+    victim = tmp_path / "victima.txt"
+    victim.write_bytes(b"DO NOT TOUCH")
+    out = tmp_path / "documento.xml"
+    (tmp_path / "documento.xml.part").symlink_to(victim)
+
+    _atomic_write_bytes(out, b"<signed/>")
+
+    assert victim.read_bytes() == b"DO NOT TOUCH"
+    assert out.read_bytes() == b"<signed/>"
+    assert not out.is_symlink()
+
+
+def test_a_failed_write_leaves_nothing_behind(tmp_path):
+    """Including the staging file, whose name nobody outside the helper knows to clean up."""
+    from firmauy.signing import _staged_output
+
+    out = tmp_path / "documento.pdf"
+    with pytest.raises(RuntimeError):
+        with _staged_output(out) as _handle:
+            raise RuntimeError("the card was pulled")
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_staging_file_does_not_decide_the_output_permissions(tmp_path):
+    """mkstemp creates at 0600 and os.replace keeps it, so without a deliberate chmod every
+    signed document would silently come out private. Making the staging name unpredictable was
+    about stopping a symlink from capturing the output; it has nothing to say about who may read
+    the result, and quietly answering that question too is a change nobody asked for."""
+    import os
+    import stat
+
+    from firmauy.signing import _atomic_write_bytes
+
+    previous = os.umask(0o022)
+    try:
+        out = tmp_path / "nuevo.xml"
+        _atomic_write_bytes(out, b"<signed/>")
+        assert stat.S_IMODE(out.stat().st_mode) == 0o644
+    finally:
+        os.umask(previous)
+
+
+def test_overwriting_keeps_the_mode_the_file_already_had(tmp_path):
+    """Somebody who ran chmod 664 on their output meant it, and signing over it is not the moment
+    to overrule them."""
+    import os
+    import stat
+
+    from firmauy.signing import _atomic_write_bytes
+
+    out = tmp_path / "compartido.xml"
+    out.write_bytes(b"<old/>")
+    os.chmod(out, 0o664)
+
+    _atomic_write_bytes(out, b"<signed/>")
+
+    assert stat.S_IMODE(out.stat().st_mode) == 0o664
+
+
+def test_the_staged_handle_is_closed_even_when_the_caller_raises(tmp_path):
+    """The context manager owns the file. Handing back a raw descriptor made every caller
+    responsible for a close they could skip by raising first, leaking it onto a path that had
+    already been unlinked."""
+    from firmauy.signing import _staged_output
+
+    handle = None
+    with pytest.raises(RuntimeError):
+        with _staged_output(tmp_path / "x.bin") as h:
+            handle = h
+            raise RuntimeError("the card was pulled")
+
+    assert handle is not None and handle.closed
+
+
+def test_a_symlinked_output_does_not_donate_its_targets_permissions(tmp_path):
+    """os.replace keeps the bytes safe and preservation was reading the mode with stat(), which
+    follows the link. A symlink planted at the output, pointed at anything world-writable, then
+    handed its mode to the signed document: the right bytes with somebody else's permissions,
+    which is half a defence."""
+    import os
+    import stat
+
+    from firmauy.signing import _atomic_write_bytes
+
+    previous = os.umask(0o022)
+    try:
+        victim = tmp_path / "victima.txt"
+        victim.write_bytes(b"DO NOT TOUCH")
+        os.chmod(victim, 0o777)
+        out = tmp_path / "salida.xml"
+        out.symlink_to(victim)
+
+        _atomic_write_bytes(out, b"<signed/>")
+
+        assert stat.S_IMODE(out.stat().st_mode) == 0o644     # the umask's answer, not the link's
+        assert not out.is_symlink()
+        assert victim.read_bytes() == b"DO NOT TOUCH"
+    finally:
+        os.umask(previous)
+
+
+def test_setuid_is_not_inherited_by_a_freshly_signed_document(tmp_path):
+    """Preserving the mode of the file being replaced is about honouring a chmod 664, not about
+    carrying every bit across. A setuid bit on a signed document is not something anybody meant
+    to ask for."""
+    import os
+    import stat
+
+    from firmauy.signing import _atomic_write_bytes
+
+    out = tmp_path / "raro.bin"
+    out.write_bytes(b"old")
+    os.chmod(out, 0o4755)
+
+    _atomic_write_bytes(out, b"new")
+
+    assert stat.S_IMODE(out.stat().st_mode) == 0o755
+
+
+def test_a_long_output_name_is_still_signable(tmp_path):
+    """The staging name used to embed the output's, adding 23 bytes to a basename that may
+    already be near NAME_MAX. A 233-byte name the filesystem accepts happily then failed with
+    ENAMETOOLONG on a path that can hold 255."""
+    from firmauy.signing import _atomic_write_bytes
+
+    out = tmp_path / ("a" * 250 + ".xml")
+    _atomic_write_bytes(out, b"<signed/>")
+
+    assert out.read_bytes() == b"<signed/>"
+
+
+def test_the_staging_file_is_private_while_it_holds_the_document(tmp_path):
+    """An unpredictable name stops somebody planting a file there and says nothing about somebody
+    watching the directory and reading one. The staging file used to sit at 0644 for the whole
+    signing operation while holding, for a PDF, essentially the entire document, even when the
+    destination it was about to replace was 0600."""
+    import os
+    import stat
+
+    from firmauy.signing import _staged_output
+
+    previous = os.umask(0o022)
+    try:
+        out = tmp_path / "privado.pdf"
+        out.write_bytes(b"old")
+        os.chmod(out, 0o600)
+
+        seen = []
+        with _staged_output(out) as handle:
+            handle.write(b"SECRET DOCUMENT")
+            handle.flush()
+            staging = [p for p in tmp_path.iterdir() if p.name.startswith(".firmauy-")]
+            seen = [stat.S_IMODE(p.stat().st_mode) for p in staging]
+
+        assert seen == [0o600], "the document was readable while it was being written"
+        assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    finally:
+        os.umask(previous)
+
+
+def test_without_overwrite_a_file_that_appears_mid_signing_survives(tmp_path):
+    """The callers check `path.exists()` before touching the card, and then a certificate read, a
+    PIN and possibly a TSA round trip happen before the write. Anything appearing in that window
+    used to be destroyed silently, with no --overwrite anywhere in sight."""
+    from firmauy.errors import OutputExistsError
+    from firmauy.signing import _staged_output
+
+    out = tmp_path / "salida.xml"
+
+    with pytest.raises(OutputExistsError):
+        with _staged_output(out, overwrite=False) as handle:
+            handle.write(b"<mine/>")
+            out.write_bytes(b"<from another process/>")   # the race, made deterministic
+
+    assert out.read_bytes() == b"<from another process/>"
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".firmauy-")]
+
+
+def test_with_overwrite_replacing_still_works(tmp_path):
+    from firmauy.signing import _atomic_write_bytes
+
+    out = tmp_path / "salida.xml"
+    out.write_bytes(b"<old/>")
+
+    _atomic_write_bytes(out, b"<new/>", overwrite=True)
+
+    assert out.read_bytes() == b"<new/>"
+
+
+def test_a_dangling_symlink_counts_as_occupied(tmp_path):
+    """`Path.exists()` reports a broken link as absent, so the early check waves it through.
+    os.link does not, which is the second reason the guarantee belongs at the commit."""
+    from firmauy.errors import OutputExistsError
+    from firmauy.signing import _atomic_write_bytes
+
+    out = tmp_path / "roto.xml"
+    out.symlink_to(tmp_path / "no-existe")
+    assert out.exists() is False
+
+    with pytest.raises(OutputExistsError):
+        _atomic_write_bytes(out, b"<signed/>", overwrite=False)
+
+
+def test_the_file_is_still_private_at_the_moment_it_is_committed(tmp_path):
+    """The narrowing used to be undone before the commit, so the staging file sat at its final,
+    possibly world-readable mode for the instant between. Small window, real one, and "private
+    while it holds data" was not literally true until the widening moved after the commit."""
+    import os
+    import stat
+
+    from firmauy.signing import _atomic_write_bytes
+
+    seen = {}
+    real_replace, real_link = os.replace, os.link
+
+    def spy_replace(src, dst):
+        seen["replace"] = stat.S_IMODE(os.stat(src).st_mode)
+        return real_replace(src, dst)
+
+    def spy_link(src, dst):
+        seen["link"] = stat.S_IMODE(os.stat(src).st_mode)
+        return real_link(src, dst)
+
+    previous = os.umask(0o022)
+    os.replace, os.link = spy_replace, spy_link
+    try:
+        _atomic_write_bytes(tmp_path / "a.xml", b"x")
+        _atomic_write_bytes(tmp_path / "b.xml", b"x", overwrite=False)
+    finally:
+        os.replace, os.link = real_replace, real_link
+        os.umask(previous)
+
+    assert seen == {"replace": 0o600, "link": 0o600}
+    # And the finished files still end up with the ordinary mode.
+    assert stat.S_IMODE((tmp_path / "a.xml").stat().st_mode) == 0o644
+
+
+def test_the_group_of_the_replaced_file_survives(tmp_path):
+    """An atomic replace swaps an inode, so the group goes with it unless it is put back. The mode
+    then reads 0640 before and after while a different set of people can open the document."""
+    import os
+    import stat
+
+    from firmauy.signing import _atomic_write_bytes
+
+    others = [g for g in os.getgroups() if g != os.getgid()]
+    if not others:
+        pytest.skip("the test user belongs to no second group")
+
+    out = tmp_path / "grupal.xml"
+    out.write_bytes(b"old")
+    os.chown(out, -1, others[0])
+    os.chmod(out, 0o640)
+
+    _atomic_write_bytes(out, b"<signed/>")
+
+    assert out.stat().st_gid == others[0]
+    assert stat.S_IMODE(out.stat().st_mode) == 0o640
+
+
+def _acl_of(path) -> bytes | None:
+    import os
+
+    try:
+        return os.getxattr(path, "system.posix_acl_access")
+    except (OSError, AttributeError):
+        return None
+
+
+def _set_default_acl(directory, spec) -> bool:
+    """Give `directory` a default ACL with setfacl. False when the platform cannot."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("setfacl"):
+        return False
+    return subprocess.run(["setfacl", "-d", "-m", spec, str(directory)],
+                          capture_output=True).returncode == 0
+
+
+def test_an_inherited_acl_does_not_widen_a_replaced_file(tmp_path):
+    """The measured case. A directory with a default ACL hands it to every file created in it,
+    the staging file included, so replacing a document that had no such grant published one that
+    did: same mode digits, readable by somebody who could not read it before."""
+    import subprocess
+
+    if not _set_default_acl(tmp_path, "u:nobody:r"):
+        pytest.skip("no ACL support here")
+
+    from firmauy.signing import _atomic_write_bytes
+
+    out = tmp_path / "doc.xml"
+    out.write_bytes(b"old")
+    subprocess.run(["setfacl", "-b", str(out)], capture_output=True)
+    before = _acl_of(out)
+
+    _atomic_write_bytes(out, b"<signed/>")
+
+    assert _acl_of(out) == before, "the signed file allows somebody the original did not"
+
+
+def test_an_explicit_acl_on_the_replaced_file_is_kept(tmp_path):
+    """The other direction: preserving means matching what the replaced file allowed, which
+    includes a grant somebody made on purpose."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("setfacl"):
+        pytest.skip("no ACL support here")
+
+    from firmauy.signing import _atomic_write_bytes
+
+    out = tmp_path / "conacl.xml"
+    out.write_bytes(b"old")
+    if subprocess.run(["setfacl", "-m", "u:nobody:r", str(out)],
+                      capture_output=True).returncode != 0:
+        pytest.skip("no ACL support here")
+    before = _acl_of(out)
+    assert before is not None
+
+    _atomic_write_bytes(out, b"<signed/>")
+
+    assert _acl_of(out) == before
+
+
+# --- when the access control cannot be carried across, nothing is published ----
+#
+# These patch the syscall rather than arranging real privileges, because the failure is what is
+# under test and it needs no root to be worth guarding. The previous version swallowed all three
+# and published anyway: mode digits preserved, the people they applied to changed.
+
+def _fails_to_preserve(monkeypatch, name, exc):
+    import os
+
+    monkeypatch.setattr(os, name, mock.Mock(side_effect=exc))
+
+
+def test_a_group_that_cannot_be_restored_stops_the_write(tmp_path, monkeypatch):
+    """A file whose group the process cannot set: without this, its 0640 was reapplied to the
+    process's own group and a different set of people could read the signed document."""
+    import os
+
+    from firmauy.errors import OutputAccessControlError
+    from firmauy.signing import _atomic_write_bytes
+
+    out = tmp_path / "grupal.xml"
+    out.write_bytes(b"ORIGINAL")
+    os.chmod(out, 0o640)
+    _fails_to_preserve(monkeypatch, "fchown", PermissionError(1, "Operation not permitted"))
+
+    with pytest.raises(OutputAccessControlError):
+        _atomic_write_bytes(out, b"<signed/>")
+
+    assert out.read_bytes() == b"ORIGINAL"
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".firmauy-")]
+
+
+def test_an_acl_that_cannot_be_restored_stops_the_write(tmp_path, monkeypatch):
+    from firmauy.errors import OutputAccessControlError
+    from firmauy.signing import _atomic_write_bytes
+
+    out = tmp_path / "conacl.xml"
+    out.write_bytes(b"ORIGINAL")
+    _fails_to_preserve(monkeypatch, "removexattr", OSError(5, "Input/output error"))
+
+    with pytest.raises(OutputAccessControlError):
+        _atomic_write_bytes(out, b"<signed/>")
+
+    assert out.read_bytes() == b"ORIGINAL"
+
+
+def test_an_unreadable_acl_stops_the_write(tmp_path, monkeypatch):
+    """Guessing "absent" would restore absence onto a file that may have had one, which is a
+    decision about who may read a document, not a detail to paper over."""
+    from firmauy.errors import OutputAccessControlError
+    from firmauy.signing import _atomic_write_bytes
+
+    out = tmp_path / "ilegible.xml"
+    out.write_bytes(b"ORIGINAL")
+    _fails_to_preserve(monkeypatch, "getxattr", OSError(5, "Input/output error"))
+
+    with pytest.raises(OutputAccessControlError):
+        _atomic_write_bytes(out, b"<signed/>")
+
+    assert out.read_bytes() == b"ORIGINAL"
+
+
+def test_a_filesystem_without_acls_is_not_an_error(tmp_path, monkeypatch):
+    """ENOTSUP is the platform saying it has no ACLs, which means none could have been inherited
+    either. That is nothing to restore, not a failure."""
+    import errno
+    import os
+
+    from firmauy.signing import _atomic_write_bytes
+
+    out = tmp_path / "sinacl.xml"
+    out.write_bytes(b"old")
+    os.chmod(out, 0o640)
+    monkeypatch.setattr(os, "getxattr",
+                        mock.Mock(side_effect=OSError(errno.ENOTSUP, "Not supported")))
+
+    _atomic_write_bytes(out, b"<signed/>")
+
+    assert out.read_bytes() == b"<signed/>"
+
+
+def test_the_owner_is_carried_across_too(tmp_path):
+    """uid was not even captured, so replacing a file belonging to somebody else reapplied their
+    mode to a document owned by whoever ran the signature."""
+    from firmauy.signing import _capture_replaced
+
+    out = tmp_path / "doc.xml"
+    out.write_bytes(b"x")
+
+    assert _capture_replaced(out).uid == out.stat().st_uid
+
+
+def test_the_permissions_come_from_the_file_actually_being_replaced(tmp_path):
+    """Signing takes seconds: a card, a PIN, sometimes a TSA. A capture taken before all that
+    describes a file that may since have been replaced by a more private one, and reapplying the
+    old mode publishes the document wider than the thing it overwrote."""
+    import os
+    import stat
+
+    from firmauy.signing import _staged_output
+
+    previous = os.umask(0o022)
+    try:
+        out = tmp_path / "doc.xml"
+        out.write_bytes(b"PUBLIC-OLD")
+        os.chmod(out, 0o644)
+
+        with _staged_output(out, overwrite=True) as handle:
+            handle.write(b"SIGNED")
+            out.write_bytes(b"PRIVATE-NEW")      # somebody else publishes, mid-signature
+            os.chmod(out, 0o600)
+
+        assert out.read_bytes() == b"SIGNED"
+        assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    finally:
+        os.umask(previous)
+
+
+def test_a_file_that_appears_mid_signing_still_decides_the_permissions(tmp_path):
+    """The same race from the other end: nothing to replace when the signature starts, so the
+    umask would have decided, and something private to replace by the time it finishes."""
+    import os
+    import stat
+
+    from firmauy.signing import _staged_output
+
+    previous = os.umask(0o022)
+    try:
+        out = tmp_path / "nuevo.xml"
+
+        with _staged_output(out, overwrite=True) as handle:
+            handle.write(b"SIGNED")
+            out.write_bytes(b"APPEARED")
+            os.chmod(out, 0o600)
+
+        assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    finally:
+        os.umask(previous)
+
+
+def test_the_capture_describes_one_file_and_not_two(tmp_path, monkeypatch):
+    """Mode, owner and group come from one syscall and the ACL from another, both by pathname,
+    and a pathname is not a handle. If the entry is replaced between the two, the answer mixes a
+    public file's mode with a private file's ACL and publishes the document at the wider one."""
+    import os
+    import stat
+
+    from firmauy.signing import _staged_output
+
+    previous = os.umask(0o022)
+    try:
+        out = tmp_path / "doc.xml"
+        out.write_bytes(b"PUBLIC-OLD")
+        os.chmod(out, 0o644)
+
+        real_getxattr = os.getxattr
+        swapped = []
+
+        def swap_then_read(target, attribute, **kwargs):
+            # Exactly the window: the mode has been read, the ACL has not.
+            if isinstance(target, int) and not swapped:
+                swapped.append(True)
+                other = tmp_path / "other"
+                other.write_bytes(b"PRIVATE-NEW")
+                os.chmod(other, 0o600)
+                os.replace(other, out)
+            return real_getxattr(target, attribute, **kwargs)
+
+        monkeypatch.setattr(os, "getxattr", swap_then_read)
+
+        with _staged_output(out, overwrite=True) as handle:
+            handle.write(b"SIGNED")
+
+        assert swapped, "the race never happened, the test proves nothing"
+        assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    finally:
+        os.umask(previous)
+
+
+def test_the_same_file_made_private_mid_read_is_also_caught(tmp_path, monkeypatch):
+    """Not every mid-read change swaps the inode. A plain chmod leaves device and inode alone and
+    still makes the mode read a moment earlier wrong, which is why ctime is part of the check."""
+    import os
+    import stat
+
+    from firmauy.signing import _staged_output
+
+    previous = os.umask(0o022)
+    try:
+        out = tmp_path / "doc.xml"
+        out.write_bytes(b"PUBLIC")
+        os.chmod(out, 0o644)
+
+        real_getxattr = os.getxattr
+        narrowed = []
+
+        def narrow_then_read(target, attribute, **kwargs):
+            if isinstance(target, int) and not narrowed:
+                narrowed.append(True)
+                os.chmod(out, 0o600)
+            return real_getxattr(target, attribute, **kwargs)
+
+        monkeypatch.setattr(os, "getxattr", narrow_then_read)
+
+        with _staged_output(out, overwrite=True) as handle:
+            handle.write(b"SIGNED")
+
+        assert narrowed, "the race never happened, the test proves nothing"
+        assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    finally:
+        os.umask(previous)
+
+
+def test_a_path_that_never_holds_still_publishes_nothing(tmp_path, monkeypatch):
+    """Starting over is bounded. Against something rewriting the path without pause the answer is
+    to refuse, not to publish permissions belonging to a file that is no longer there."""
+    import os
+
+    import pytest
+
+    from firmauy.errors import OutputAccessControlError
+    from firmauy.signing import _staged_output
+
+    out = tmp_path / "doc.xml"
+    out.write_bytes(b"OLD")
+    os.chmod(out, 0o644)
+
+    real_getxattr = os.getxattr
+    swaps = []
+
+    def swap_then_read(target, attribute, **kwargs):
+        if isinstance(target, int):
+            swaps.append(True)
+            other = tmp_path / f"other{len(swaps)}"
+            other.write_bytes(b"CHURN")
+            os.chmod(other, 0o600)
+            os.replace(other, out)
+        return real_getxattr(target, attribute, **kwargs)
+
+    monkeypatch.setattr(os, "getxattr", swap_then_read)
+
+    with pytest.raises(OutputAccessControlError) as caught:
+        with _staged_output(out, overwrite=True) as handle:
+            handle.write(b"SIGNED")
+
+    assert caught.value.path == out
+    assert len(swaps) > 1, "it gave up without starting over even once"
+    assert out.read_bytes() != b"SIGNED"
+    assert not list(tmp_path.glob(".firmauy-*.part")), "a staging file was left behind"
+
+
+def test_a_discarded_attempt_leaves_nothing_on_the_staging_file(tmp_path):
+    """Reading the access control can be thrown away and started over, and that is only safe if a
+    thrown-away read never touched the file about to be published. Measured before the fix: the
+    first read copied a grant to a third party, the file then vanished, the second read found
+    nothing to preserve and so restored nothing, and the grant from the discarded read was
+    published on a file that never had one."""
+    import os
+    import shutil
+    import stat
+    import subprocess
+
+    from firmauy.signing import _staged_output
+
+    if not shutil.which("setfacl"):
+        pytest.skip("no ACL support here")
+
+    out = tmp_path / "doc.xml"
+    out.write_bytes(b"OLD")
+    os.chmod(out, 0o644)
+    if subprocess.run(["setfacl", "-m", "u:nobody:r", str(out)],
+                      capture_output=True).returncode != 0:
+        pytest.skip("no ACL support here")
+
+    others = [g for g in os.getgroups() if g != os.getgid()]
+    if others:
+        os.chown(out, -1, others[0])
+
+    real_getxattr = os.getxattr
+    vanished = []
+
+    def read_then_vanish(target, attribute, **kwargs):
+        value = real_getxattr(target, attribute, **kwargs)
+        if isinstance(target, int) and not vanished:
+            vanished.append(True)
+            os.unlink(out)              # the read is now worthless, and gets discarded
+        return value
+
+    previous = os.umask(0o022)
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(os, "getxattr", read_then_vanish)
+            with _staged_output(out, overwrite=True) as handle:
+                handle.write(b"SIGNED")
+    finally:
+        os.umask(previous)
+
+    assert vanished, "the race never happened, the test proves nothing"
+    assert out.read_bytes() == b"SIGNED"
+    assert _acl_of(out) is None, "an ACL from a discarded read reached the published file"
+    assert stat.S_IMODE(out.stat().st_mode) == 0o644
+    assert out.stat().st_uid == os.getuid()
+    if others:
+        assert out.stat().st_gid == os.getgid(), "a group from a discarded read reached the file"
+
+
+
+
+class _NoClock:
+    """A stat result from a filesystem whose timestamps cannot tell two moments apart.
+
+    HFS+ and FAT move in whole seconds, so anything happening inside one tick is invisible to
+    them. POSIX also declines to require that `rename` touch the renamed file's status change
+    time at all: "Some implementations mark for update the last file status change timestamp of
+    renamed files and some do not." Tests that would otherwise pass because ext4 happens to be
+    generous wear this, so what they prove holds where it is not.
+    """
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    @property
+    def st_ctime_ns(self):
+        return 0
+
+    @property
+    def st_ctime(self):
+        return 0.0
+
+
+def _stop_the_clock(patch):
+    """Make every stat this code performs report the same status change time."""
+    import os
+    import pathlib
+
+    real_lstat, real_fstat = pathlib.Path.lstat, os.fstat
+    patch.setattr(pathlib.Path, "lstat", lambda self, *a, **kw: _NoClock(real_lstat(self, *a, **kw)))
+    patch.setattr(os, "fstat", lambda fd, *a, **kw: _NoClock(real_fstat(fd, *a, **kw)))
+
+
+def test_an_entry_that_leaves_and_returns_mid_read_cannot_mix_two_files(tmp_path):
+    """The case no amount of comparing pathname lookups can catch. The file is moved aside, a
+    different one with a different ACL takes its place for exactly the length of the ACL read, and
+    the original comes back, so a before and after comparison sees the same file and agrees.
+
+    It cannot happen here because nothing is read by pathname: the descriptor keeps pointing at
+    the file that was opened no matter what the name does. The clock is stopped for the whole test
+    so that nothing can be attributed to `rename` moving a timestamp, which POSIX does not require
+    it to do.
+    """
+    import os
+    import shutil
+    import stat
+    import subprocess
+
+    from firmauy.signing import _staged_output
+
+    if not shutil.which("setfacl"):
+        pytest.skip("no ACL support here")
+
+    out = tmp_path / "doc.xml"
+    out.write_bytes(b"MINE")
+    os.chmod(out, 0o640)
+    if subprocess.run(["setfacl", "-m", "u:daemon:r", str(out)],
+                      capture_output=True).returncode != 0:
+        pytest.skip("no ACL support here")
+    mine = _acl_of(out)
+
+    intruder = tmp_path / "intruder"
+    intruder.write_bytes(b"THEIRS")
+    os.chmod(intruder, 0o604)
+    subprocess.run(["setfacl", "-m", "u:nobody:rw", str(intruder)], check=True)
+    theirs = _acl_of(intruder)
+    assert mine != theirs, "the two files must be distinguishable for this to prove anything"
+
+    danced = []
+
+    with pytest.MonkeyPatch.context() as patch:
+        _stop_the_clock(patch)
+        real_getxattr = os.getxattr
+
+        def swap_around_the_read(target, attribute, **kwargs):
+            if isinstance(target, int) and not danced:
+                danced.append(True)
+                os.replace(out, tmp_path / "aside")
+                os.replace(intruder, out)
+                try:
+                    return real_getxattr(target, attribute, **kwargs)
+                finally:
+                    os.replace(out, tmp_path / "gone")
+                    os.replace(tmp_path / "aside", out)
+            return real_getxattr(target, attribute, **kwargs)
+
+        patch.setattr(os, "getxattr", swap_around_the_read)
+        with _staged_output(out, overwrite=True) as handle:
+            handle.write(b"SIGNED")
+
+    assert danced, "the race never happened, the test proves nothing"
+    assert out.read_bytes() == b"SIGNED"
+    assert _acl_of(out) == mine, "the intruder's ACL reached the published file"
+    assert stat.S_IMODE(out.stat().st_mode) == 0o640
+
+
+def test_a_replacement_is_caught_with_the_clock_stopped_too(tmp_path):
+    """The plain swap, where the intruder stays. Device and inode settle it, so this holds on a
+    filesystem whose timestamps say nothing."""
+    import os
+    import stat
+
+    from firmauy.signing import _staged_output
+
+    previous = os.umask(0o022)
+    try:
+        out = tmp_path / "doc.xml"
+        out.write_bytes(b"PUBLIC-OLD")
+        os.chmod(out, 0o644)
+        swapped = []
+
+        with pytest.MonkeyPatch.context() as patch:
+            _stop_the_clock(patch)
+            real_getxattr = os.getxattr
+
+            def swap_then_read(target, attribute, **kwargs):
+                if isinstance(target, int) and not swapped:
+                    swapped.append(True)
+                    other = tmp_path / "other"
+                    other.write_bytes(b"PRIVATE-NEW")
+                    os.chmod(other, 0o600)
+                    os.replace(other, out)
+                return real_getxattr(target, attribute, **kwargs)
+
+            patch.setattr(os, "getxattr", swap_then_read)
+            with _staged_output(out, overwrite=True) as handle:
+                handle.write(b"SIGNED")
+
+        assert swapped, "the race never happened, the test proves nothing"
+        assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    finally:
+        os.umask(previous)
+
+
+def test_an_output_its_owner_cannot_read_is_refused_rather_than_guessed(tmp_path):
+    """The price of reading through a descriptor. Replacing a file never needed permission to read
+    it, and now it does, so a file its own owner has made unreadable stops the signature instead
+    of being overwritten with access control assembled from a second lookup. Nothing is mocked
+    here: the kernel denies the open, owner or not."""
+    import os
+
+    from firmauy.errors import OutputAccessControlError
+    from firmauy.signing import _staged_output
+
+    out = tmp_path / "doc.xml"
+    out.write_bytes(b"SECRET")
+    os.chmod(out, 0o000)
+    try:
+        os.close(os.open(out, os.O_RDONLY))
+        pytest.skip("this user can read anything, so there is no denial to observe")
+    except PermissionError:
+        pass
+
+    with pytest.raises(OutputAccessControlError) as caught:
+        with _staged_output(out, overwrite=True) as handle:
+            handle.write(b"SIGNED")
+
+    assert caught.value.path == out
+    assert "chmod u+r" in str(caught.value)
+    assert not list(tmp_path.glob(".firmauy-*.part")), "a staging file was left behind"
+
+    os.chmod(out, 0o600)
+    assert out.read_bytes() == b"SECRET", "the unreadable file was replaced anyway"
+
+
+def test_a_symlink_at_the_output_does_not_lend_its_target_access_control(tmp_path):
+    """The write already refuses to go through a symlink planted at the output. So must the read:
+    following one would take the mode and ACL of whatever it points at, a file nobody asked to
+    replace, and stamp them on the signature. The link is not the file being replaced, so it has
+    nothing to hand over and the result gets what a new file gets."""
+    import os
+    import shutil
+    import stat
+    import subprocess
+
+    from firmauy.signing import _staged_output
+
+    if not shutil.which("setfacl"):
+        pytest.skip("no ACL support here")
+
+    target = tmp_path / "elsewhere.txt"
+    target.write_bytes(b"DO NOT TOUCH")
+    os.chmod(target, 0o600)
+    if subprocess.run(["setfacl", "-m", "u:daemon:rw", str(target)],
+                      capture_output=True).returncode != 0:
+        pytest.skip("no ACL support here")
+
+    out = tmp_path / "doc.xml"
+    out.symlink_to(target)
+
+    previous = os.umask(0o022)
+    try:
+        with _staged_output(out, overwrite=True) as handle:
+            handle.write(b"SIGNED")
+    finally:
+        os.umask(previous)
+
+    assert not out.is_symlink()
+    assert out.read_bytes() == b"SIGNED"
+    assert target.read_bytes() == b"DO NOT TOUCH"
+    assert stat.S_IMODE(out.stat().st_mode) == 0o644, "it took the symlink target's mode"
+    assert _acl_of(out) is None, "it took the symlink target's ACL"
+
+
+def test_a_fifo_at_the_output_does_not_hang_the_signature(tmp_path):
+    """Opening a FIFO for reading waits for a writer, and nobody is coming. Without O_NONBLOCK the
+    signature stops there forever, after the card and the PIN and the TSA, with the document
+    already written to the staging file. A FIFO is not the file being replaced either, so there is
+    nothing to preserve from it."""
+    import os
+    import signal
+    import stat
+
+    from firmauy.signing import _staged_output
+
+    out = tmp_path / "doc.xml"
+    os.mkfifo(out)
+
+    def give_up(signum, frame):
+        raise AssertionError("the open blocked: a FIFO at the output hangs the signature")
+
+    previous_handler = signal.signal(signal.SIGALRM, give_up)
+    signal.alarm(10)
+    previous = os.umask(0o022)
+    try:
+        with _staged_output(out, overwrite=True) as handle:
+            handle.write(b"SIGNED")
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        os.umask(previous)
+
+    assert stat.S_ISREG(out.stat().st_mode), "the FIFO was not replaced by a regular file"
+    assert out.read_bytes() == b"SIGNED"
+    assert stat.S_IMODE(out.stat().st_mode) == 0o644
+
+
+@pytest.mark.parametrize("failing", ["fstat", "lstat"])
+def test_an_unexpected_failure_reading_the_output_stays_a_typed_error(tmp_path, failing):
+    """Every way of failing to read the replaced file's access control ends in the same exception,
+    including the ones nobody expects. Failing closed is not the whole contract: a caller that
+    catches OutputAccessControlError should not also have to catch a bare OSError to find out that
+    the signature was not written."""
+    import errno
+    import os
+    import pathlib
+
+    from firmauy.errors import OutputAccessControlError
+    from firmauy.signing import _staged_output
+
+    out = tmp_path / "doc.xml"
+    out.write_bytes(b"OLD")
+
+    real_fstat, real_lstat = os.fstat, pathlib.Path.lstat
+    fired = []
+
+    target_inode = out.stat().st_ino
+
+    def break_fstat(fd, *a, **kw):
+        result = real_fstat(fd, *a, **kw)
+        # Only the descriptor opened on the file being replaced. The staging file gets fstat'd
+        # too, and a failure there is an environment problem rather than an access control one.
+        if result.st_ino == target_inode and not fired:
+            fired.append(True)
+            raise OSError(errno.EIO, "Input/output error")
+        return result
+
+    def break_lstat(self, *a, **kw):
+        if self == out and not fired:
+            fired.append(True)
+            raise OSError(errno.ENOTDIR, "Not a directory")
+        return real_lstat(self, *a, **kw)
+
+    with pytest.MonkeyPatch.context() as patch:
+        if failing == "fstat":
+            patch.setattr(os, "fstat", break_fstat)
+        else:
+            patch.setattr(pathlib.Path, "lstat", break_lstat)
+
+        with pytest.raises(OutputAccessControlError) as caught:
+            with _staged_output(out, overwrite=True) as handle:
+                handle.write(b"SIGNED")
+
+    assert fired, "the failure never happened, the test proves nothing"
+    assert caught.value.path == out
+    assert out.read_bytes() == b"OLD", "the original was replaced anyway"
+    assert not list(tmp_path.glob(".firmauy-*.part")), "a staging file was left behind"
+
+
+def test_a_failure_after_the_commit_is_a_typed_committed_error(tmp_path):
+    """The one failure in this function that raises with the output already written. Every other
+    one leaves nothing behind, so a caller that treats an exception as "no output" is right except
+    here, and would sign again over a document that is already complete. It carries the fields
+    needed to repair it, because deciding not to retry by matching text inside a message is the
+    thing this error family exists to avoid."""
+    import errno
+    import os
+    import stat
+
+    from firmauy.errors import FirmaUYError, OutputCommittedError
+    from firmauy.signing import _staged_output
+
+    out = tmp_path / "doc.xml"
+    out.write_bytes(b"OLD")
+    os.chmod(out, 0o644)
+
+    real_fchmod = os.fchmod
+
+    def break_the_last_one(fd, mode):
+        if mode != 0o600:                   # the only fchmod after the commit
+            raise OSError(errno.EROFS, "Read-only file system")
+        return real_fchmod(fd, mode)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(os, "fchmod", break_the_last_one)
+        with pytest.raises(OutputCommittedError) as caught:
+            with _staged_output(out, overwrite=True) as handle:
+                handle.write(b"SIGNED")
+
+    failure = caught.value
+    assert isinstance(failure, FirmaUYError)
+    assert not isinstance(failure, OSError), "the domain split keeps these off the built-in types"
+    assert failure.path == out
+    assert failure.final_mode == 0o644, "the mode it should have been given"
+    assert failure.errno == errno.EROFS, "the operating system's reason was lost"
+    assert "valid" not in str(failure), "it cannot claim validity: nothing verified the output"
+
+    assert out.read_bytes() == b"SIGNED", "the signature was not committed"
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    assert not list(tmp_path.glob(".firmauy-*.part")), "a staging file was left behind"
+
+
+def test_a_batch_counts_a_committed_output_as_signed(monkeypatch, tmp_path):
+    """The reason the type exists rather than a clearer message. The file is on disk, complete,
+    with the wrong mode. Counting it as an error printed ERROR next to a path that held a valid
+    signature, and the summary said fewer files were signed than there were."""
+    from firmauy.errors import OutputCommittedError
+
+    calls = _patch_signing(monkeypatch)
+
+    def commit_then_fail(**k):
+        calls.append(("xml", k["output_xml"]))
+        raise OutputCommittedError("could not set the mode to 0o644 (Read-only file system)",
+                                   path=k["output_xml"], final_mode=0o644, errno=30)
+
+    monkeypatch.setattr(cli, "_sign_one_xml", commit_then_fail)
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.pdf").write_bytes(b"%PDF-1.7\n")
+    (src / "b.xml").write_bytes(b"<r/>")
+    out = tmp_path / "out"
+
+    r = runner.invoke(app, ["sign-batch", "--input-dir", str(src), "--output-dir", str(out)])
+
+    assert "Signed: 2/2" in r.output, "the committed file was not counted as signed"
+    assert "Needing a chmod: 1." in r.output
+    assert "ERROR" not in r.output, "a file that is on disk was reported as an error"
+    assert "WARN" in r.output
+    assert "SIGNED: " in r.output, "it should not read OK when the mode was never set"
+    # Signed is not the same as done. The command was asked to set the mode and did not, so a
+    # script checking only the exit code must not be told everything went fine.
+    assert r.exit_code == 1, r.output
+
+
+def test_a_committed_output_is_reported_as_written_by_the_batch_api(monkeypatch, tmp_path):
+    """The same promise on the programmatic side: `completed` holds one report per file on disk,
+    and a file whose only problem is its mode is on disk."""
+    import firmauy.api as api_module
+    from firmauy.errors import BatchSignError, OutputCommittedError
+
+    _patch_signing(monkeypatch)
+
+    def commit_then_fail(**k):
+        raise OutputCommittedError("mode", path=k["output_xml"], final_mode=0o644, errno=30)
+
+    monkeypatch.setattr(signing, "_sign_one_xml", commit_then_fail)
+
+    a = tmp_path / "a.xml"
+    a.write_bytes(b"<r/>")
+    b = tmp_path / "b.xml"
+    b.write_bytes(b"<r/>")
+
+    with pytest.raises(BatchSignError) as caught:
+        api_module.sign_files([a, b], pin="1234", native=False)
+
+    failure = caught.value
+    assert len(failure.completed) == 1, "the committed file was reported as never produced"
+    assert failure.completed[0].output_path.name == "a_firmado.xml"
+    assert failure.completed[0].verified is False
+    assert failure.failed_index == 0
+    assert isinstance(failure.__cause__, OutputCommittedError)
+    assert failure.__cause__.final_mode == 0o644
+
+
+def test_a_batch_does_not_report_a_verification_that_never_ran(monkeypatch, tmp_path):
+    """The verification step runs after the signing call returns, so a failure inside that call
+    means it never ran. Printing OK for a file the user asked to have verified reports a check
+    that did not happen."""
+    from firmauy.errors import OutputCommittedError
+
+    _patch_signing(monkeypatch)
+    verified = []
+    monkeypatch.setattr(cli, "_verify_after_xml", lambda out: verified.append(out))
+
+    def commit_then_fail(**k):
+        raise OutputCommittedError("could not set the mode", path=k["output_xml"],
+                                   final_mode=0o644, errno=30)
+
+    monkeypatch.setattr(cli, "_sign_one_xml", commit_then_fail)
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "b.xml").write_bytes(b"<r/>")
+
+    r = runner.invoke(app, ["sign-batch", "--input-dir", str(src),
+                            "--output-dir", str(tmp_path / "out"), "--verify"])
+
+    assert not verified, "the verification cannot have run: the signing call raised"
+    assert "SIGNED (not verified)" in r.output
+    assert "Signed: 1/1" in r.output
+    assert r.exit_code == 1
+
+
+def test_a_committed_output_reaches_the_progress_callback(monkeypatch, tmp_path):
+    """`progress` is documented as running after each output is written, and this output is
+    written. Skipping it showed a progress bar at zero while the file existed and `completed`
+    already counted it."""
+    import firmauy.api as api_module
+    from firmauy.errors import BatchSignError, OutputCommittedError
+
+    _patch_signing(monkeypatch)
+
+    def commit_then_fail(**k):
+        raise OutputCommittedError("mode", path=k["output_xml"], final_mode=0o644, errno=30)
+
+    monkeypatch.setattr(signing, "_sign_one_xml", commit_then_fail)
+
+    a = tmp_path / "a.xml"
+    a.write_bytes(b"<r/>")
+    seen = []
+
+    with pytest.raises(BatchSignError) as caught:
+        api_module.sign_files([a], pin="1234", native=False,
+                              progress=lambda i, src, out: seen.append((i, out)))
+
+    assert len(seen) == 1, "the written output never reached progress"
+    assert seen[0][0] == 0
+    assert seen[0][1].name == "a_firmado.xml"
+    assert len(caught.value.completed) == 1, "progress and completed must agree"
+
+
+def test_a_broken_progress_callback_cannot_bury_the_repair_information(monkeypatch, tmp_path):
+    """`progress` is the caller's own code and can have bugs in it. When it does, it must not take
+    with it the one thing that says the output exists and must not be signed again. Losing that
+    turns a file needing a chmod into what looks like a failure before anything was written, and
+    the obvious response to that is to sign it a second time."""
+    import firmauy.api as api_module
+    from firmauy.errors import BatchSignError, OutputCommittedError
+
+    _patch_signing(monkeypatch)
+
+    def commit_then_fail(**k):
+        raise OutputCommittedError("mode", path=k["output_xml"], final_mode=0o644, errno=30)
+
+    monkeypatch.setattr(signing, "_sign_one_xml", commit_then_fail)
+
+    def boom(index, source, out):
+        raise RuntimeError("progress exploded")
+
+    a = tmp_path / "a.xml"
+    a.write_bytes(b"<r/>")
+
+    with pytest.raises(BatchSignError) as caught:
+        api_module.sign_files([a], pin="1234", native=False, progress=boom)
+
+    failure = caught.value
+    assert isinstance(failure.__cause__, OutputCommittedError), "the repair information was lost"
+    assert failure.__cause__.final_mode == 0o644
+    assert failure.__cause__.errno == 30
+    assert len(failure.completed) == 1, "the written output vanished from the report"
+    assert isinstance(failure.callback_error, RuntimeError), "the caller's own bug was swallowed"
+    assert "progress exploded" in str(failure.callback_error)
+
+
+# The four batch commands each carry their own copy of the committed-output handling. A
+# parametrised test over all of them is what stops a later change from fixing three and leaving
+# the fourth printing OK for a file whose permissions were never set.
+_BATCH_COMMANDS = [
+    ("sign-pdf-batch", "a.pdf", b"%PDF-1.7\n", "_sign_one_pdf", "output_pdf"),
+    ("sign-xml-batch", "a.xml", b"<r/>", "_sign_one_xml", "output_xml"),
+    ("sign-any-batch", "a.zip", b"PKbin", "_sign_one_cms", "output_p7s"),
+    ("sign-batch", "a.xml", b"<r/>", "_sign_one_xml", "output_xml"),
+]
+
+
+@pytest.mark.parametrize("command,name,body,worker,out_key", _BATCH_COMMANDS)
+@pytest.mark.parametrize("verify", [False, True])
+def test_every_batch_command_reports_a_committed_output_the_same_way(
+        monkeypatch, tmp_path, command, name, body, worker, out_key, verify):
+    from firmauy.errors import OutputCommittedError
+
+    _patch_signing(monkeypatch)
+    for after in ("_verify_after_pdf", "_verify_after_xml", "_verify_after_cms"):
+        monkeypatch.setattr(cli, after, lambda *a, **k: None)
+
+    def commit_then_fail(**k):
+        raise OutputCommittedError("could not set the mode to 0o644 (Read-only file system)",
+                                   path=k[out_key], final_mode=0o644, errno=30)
+
+    monkeypatch.setattr(cli, worker, commit_then_fail)
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / name).write_bytes(body)
+    args = [command, "--input-dir", str(src), "--output-dir", str(tmp_path / "out")]
+    if verify:
+        args.append("--verify")
+
+    r = runner.invoke(app, args)
+
+    expected = "SIGNED (not verified)" if verify else "SIGNED"
+    assert expected in r.output, f"{command} did not say {expected!r}"
+    assert "OK:" not in r.output, f"{command} still claims OK for a mode that was never set"
+    assert "WARN" in r.output, f"{command} did not warn"
+    assert "Signed: 1/1" in r.output, f"{command} did not count the file as signed"
+    assert "Needing a chmod: 1." in r.output, f"{command} did not say what is pending"
+    assert r.exit_code == 1, f"{command} reported success"
+
+
+def test_a_signature_that_fails_its_own_check_is_not_reported_as_done(monkeypatch, tmp_path):
+    """A post-sign verification failure also leaves a file on disk, and it is deliberately not in
+    `completed`. That list is what a caller reads to know what it does not have to redo, and this
+    is a file it very probably does: the check that failed says the produced signature is not
+    intact. Not the same case as a mode that could not be set, where the bytes were committed
+    whole and only a permission bit is wrong, so signing again would be waste.
+
+    What it must not do is stay quiet about the file existing."""
+    import firmauy.api as api_module
+    from firmauy.errors import BatchSignError
+
+    _patch_signing(monkeypatch)
+    written = []
+
+    def write_it(**k):
+        k["output_xml"].write_bytes(b"<signed/>")
+        written.append(k["output_xml"])
+
+    monkeypatch.setattr(signing, "_sign_one_xml", write_it)
+    monkeypatch.setattr(signing, "_verify_after_xml", signing._verify_after_xml)
+
+    a = tmp_path / "a.xml"
+    a.write_bytes(b"<r/>")
+    seen = []
+
+    with pytest.raises(BatchSignError) as caught:
+        api_module.sign_files([a], pin="1234", native=False, verify=True,
+                              progress=lambda i, src, out: seen.append(out))
+
+    failure = caught.value
+    assert written and written[0].exists(), "the test needs the output to have been written"
+    assert failure.completed == [], "a signature that failed its own check was reported as done"
+    assert not seen, "progress announces finished work, and this is not finished"
+    assert failure.failed_path == a
+    assert "is on disk" in str(failure.__cause__), "nothing said the file exists"
+    assert written[0].name in str(failure.__cause__)
+
+
+def test_a_verification_that_could_not_run_still_names_the_output(monkeypatch, tmp_path):
+    """The self-check saying no is not the only way it fails to happen. The verifier can raise
+    before it ever produces a result, and then the output exists with nobody having established
+    anything about it. Saying only that something went wrong leaves a file on disk that will be
+    found later and taken for a signature."""
+    import firmauy.api as api_module
+    from firmauy.errors import BatchSignError, PostSignVerificationError
+
+    _patch_signing(monkeypatch)
+    written = []
+
+    def write_it(**k):
+        k["output_xml"].write_bytes(b"<signed/>")
+        written.append(k["output_xml"])
+
+    def explode(*a, **k):
+        raise RuntimeError("XML parser exploded")
+
+    monkeypatch.setattr(signing, "_sign_one_xml", write_it)
+    monkeypatch.setattr(signing, "verify_xml", explode)
+
+    a = tmp_path / "a.xml"
+    a.write_bytes(b"<r/>")
+
+    with pytest.raises(BatchSignError) as caught:
+        api_module.sign_files([a], pin="1234", native=False, verify=True)
+
+    cause = caught.value.__cause__
+    assert written[0].exists()
+    assert isinstance(cause, PostSignVerificationError), "an unreadable outcome stayed untyped"
+    assert cause.path == written[0]
+    assert cause.outcome == "inconclusive", "it cannot claim the signature was found broken"
+    assert written[0].name in str(cause)
+    # Not in `completed`, which is what can be handed to somebody, and this cannot be. The caller
+    # is told not to sign it again through `__cause__`, not by its absence from a list.
+    assert caught.value.completed == []
+    assert "do not use it" in str(cause) and "before signing again" in str(cause)
+
+
+def test_a_detached_signature_does_not_blame_itself_for_a_changed_original(tmp_path):
+    """A detached signature covers bytes in a different file, and the self-check re-opens that
+    file by name. If it changed after signing, the .p7s can be a perfectly good signature over
+    what was actually signed and the check still reports a mismatch. It cannot tell the two apart,
+    so it must not say the signature is broken and send somebody to sign whatever the file holds
+    now, which may not be what they meant to sign at all."""
+    from firmauy.errors import PostSignVerificationError
+
+    data = b"the signed content\n"
+    doc = tmp_path / "d.bin"
+    doc.write_bytes(data)
+    sig = tmp_path / "d.bin.p7s"
+    sig.write_bytes(_software_p7s(data))
+
+    _verify_after_cms(doc, sig)                     # matches -> no raise
+
+    doc.write_bytes(b"somebody edited this!!\n")    # the original moved on
+    with pytest.raises(PostSignVerificationError) as caught:
+        _verify_after_cms(doc, sig)
+
+    message = str(caught.value)
+    # Not "failed", which is documented as delete and sign again: doing that here would sign the
+    # edited content. The field has to carry the same uncertainty the message does.
+    assert caught.value.outcome == "detached-mismatch"
+    assert caught.value.path == sig
+    assert caught.value.covers == doc
+    assert "does not verify against d.bin as it is now" in message
+    assert "or d.bin changed after it was signed" in message
+    assert "cannot tell which" in message
+    assert "the produced signature is not intact" not in message, "it blamed the wrong file"
+    assert "delete it and sign again" not in message, "that would sign the edited content"
+
+
+def test_a_self_contained_signature_does_say_the_signature_is_broken(tmp_path):
+    """The other half of the same rule. With nothing external to compare against there is only
+    one explanation left, so the message is allowed to name it."""
+    from firmauy.errors import PostSignVerificationError
+
+    out = tmp_path / "salida.xml"
+    with pytest.raises(PostSignVerificationError) as caught:
+        _check_post_sign(VerifyResult("INVALID", [Check("intact", False, "tampered")]), out)
+
+    assert "the produced signature is not intact" in str(caught.value)
+    assert "delete it and sign again" in str(caught.value)
+
+
+def test_every_post_sign_outcome_is_one_the_contract_names(tmp_path):
+    """Three outcomes, and a program branches on them. A fourth appearing by accident, or one of
+    these being spelled differently in one code path, falls through every caller's branches into
+    whatever their else does."""
+    from pathlib import Path
+
+    from firmauy.errors import PostSignVerificationError
+
+    named = {"failed", "detached-mismatch", "inconclusive"}
+    source = (Path(__file__).resolve().parent.parent
+              / "src" / "firmauy" / "signing.py").read_text()
+    used = set(re.findall(r'outcome="([^"]+)"', source))
+    assert used <= named, f"an outcome nobody documented: {used - named}"
+    assert used == named, f"an outcome the contract names but nothing raises: {named - used}"
+
+    assert PostSignVerificationError("x").covers is None

@@ -224,8 +224,10 @@ for r in reports:
 Each file's type is resolved like `sign()`. `output_dir` writes the results there instead of next to
 each input. Returns a list of `SignReport`.
 
-`progress` is called after each output is written, with `(index, input_path, output_path)`, so a
-progress bar can be honest about what is already on disk:
+`progress` is called after each input finishes, including any post-sign verification that was
+asked for, with `(index, input_path, output_path)`, so a progress bar can be honest about what is
+done. Finishing, not merely writing: an output whose self-check failed has been written and does
+not reach the callback, for the same reason it is not in `completed`.
 
 ```python
 sign_files(paths, pin, progress=lambda i, src, out: print(f"{i + 1}/{len(paths)}: {out.name}"))
@@ -245,12 +247,34 @@ try:
 except BatchSignError as exc:
     print(f"Signed {len(exc.completed)} of {len(paths)}, stopped at {exc.failed_path}")
     print(f"Reason: {exc.__cause__}")
-    # exc.completed are real, valid signatures, and they are still on disk.
+    # exc.completed are real signatures, still on disk. Check .verified on each.
 ```
 
 Those outputs are deliberately not rolled back: they are real signatures, and being able to say
-"2 of 7 were signed and they are fine" is worth a great deal more to the person waiting than
-"it failed".
+"2 of 7 were signed" is worth a great deal more to the person waiting than "it failed".
+
+`completed` is what is finished and can be handed to somebody. Since 1.14.0 it can include the file at
+`failed_index`, whenever the failure came after that output was finished: `OutputCommittedError`,
+where only the final permissions could not be set, and a callback raising after the signature was
+written. So `len(completed)` is not always `failed_index`.
+
+It is narrower than every file on disk: an output whose self-check failed, or whose self-check
+could not be completed, has been written and is deliberately not here, because neither can be used
+yet.
+
+It is also narrower than "everything you do not have to redo", so **the work left over is not
+`paths` minus `completed`**. A batch stops at one file, and what that file needs is in `__cause__`,
+already structured: a `PostSignVerificationError` with `outcome="inconclusive"` says the output
+exists and must not be signed again, only checked. Computing a retry list by subtraction would
+sign it a second time.
+
+A report being present says the output is finished rather than that it was checked. Read
+`verified` per report.
+
+`callback_error` holds what your own `progress` or `should_continue` raised, when one did.
+Those run your code, and whatever they raise used to surface in place of everything else,
+including the `OutputCommittedError` saying a file exists and must not be signed again. A broken
+progress bar is not a reason to lose that, so it is carried here instead. *New in 1.14.0.*
 
 `should_continue` is asked, before each file, whether to keep going. It is how a GUI offers a
 Cancel button on a long batch:
@@ -384,10 +408,16 @@ validate_ci("1.234.567-8").valid    # True / False
 complete_ci("1234567")              # body + its check digit
 ```
 
-## Refresh the national CA certificates
+## Re-fetch the pinned national CA certificates
 
-`fetch_cas()` refreshes the national CAs (root + intermediate) into a per-user cache. Verification
+`fetch_cas()` downloads the national CAs (root + intermediate) into a per-user cache. Verification
 already works offline with the bundled anchors, so this is optional.
+
+It re-fetches *the certificates already pinned in this release*, and cannot take a new one: bytes
+are accepted only when they match a fingerprint in the source, so an issuer rotation is rejected
+by the same check that makes the download safe. Absorbing a rotation needs a new firmauy release,
+or `ca_file=` at verification time. See
+[trust-anchors.md](trust-anchors.md#validity-over-time).
 
 ```python
 from firmauy.api import fetch_cas
@@ -422,13 +452,69 @@ The hierarchy, under a common `FirmaUYError` base:
 - `CertificateError`: base, with `CertificateNotFoundError`, `CertificateNotValidError` (expired
   or not yet valid) and `SigningKeyNotFoundError`, plus `TokenNotFoundError` for the PKCS#11 module.
 - `OutputExistsError`: the output file exists and `overwrite` was not passed (carries `path`).
+  Also raised when a file appears at that path *while* the signature is being made, which the
+  up-front check cannot see.
+- `OutputAccessControlError`: replacing the output would have changed who can read it, and the
+  signature was not written (carries `path`). A signature is published by replacing an inode, and
+  the replacement carries the access control of whoever created it rather than of the file it
+  replaces. What overwriting preserves is exactly four things: POSIX owner, POSIX group, the
+  `0o777` permission bits and the POSIX access ACL. Deliberately not preserved, and reset to what
+  a new file gets: `setuid`, `setgid` and the sticky bit, non-POSIX ACLs, SELinux labels,
+  capabilities and every other `security.*` or `user.*` attribute. Transplanting those onto a
+  document this library just produced is not something a signing call implies.
+
+  Raised when any of the four cannot be read or cannot be restored, which usually means the output
+  belongs to another user or group, and also when the output cannot be read at all: the four are
+  read through one open descriptor so that they cannot describe two different files, and there is
+  no opening a file you have no permission to read. `chmod u+r` it and sign again. In every case
+  nothing is written and the existing file is left exactly as it was.
+
+  The guarantee is that the four describe a single inode, not that they are an atomic snapshot of
+  it. Against another process already entitled to rewrite that inode's access control, an ordinary
+  concurrent change is caught by its timestamp, subject to the resolution of the filesystem
+  storing it. POSIX offers no atomic read of `stat` and ACL together.
+
+- `OutputCommittedError`: **a committed output is complete and should not be signed again.** A
+  signature is written whole or not at all and a failure normally leaves nothing behind, so
+  treating an exception as "no output" is right except here and for `PostSignVerificationError`
+  below. Setting the final permissions is the
+  last step and happens after the atomic commit, deliberately, so the document is never readable
+  by anyone else until it is in place under its own name. If that step fails, the file at `path`
+  is complete and its bytes are final, and its mode stayed `0600`. Carries `path`, `final_mode`
+  (the mode it should have been given) and `errno`. Repair the mode rather than signing again.
+
+  Note what it does *not* claim: that the output was verified. `verify=True` runs after the
+  signing call returns, so when this is raised the verification step never ran. In a batch the
+  file is counted as written, appears in `BatchSignError.completed` with `verified=False`, and the
+  CLI prints `SIGNED` rather than `OK`, or `SIGNED (not verified)` when `--verify` was asked for,
+  plus a `WARN` line. It counts toward `Signed: n/m`, the summary gains `Needing a chmod: n`, and
+  the command exits non-zero: the document is signed, but it did not do everything it was asked
+  to. It is a `FirmaUYError` and deliberately not an `OSError`, so a caller catching
+  the domain family sees it and one catching environment failures does not.
+
+  *New in 1.14.0.*
+
+- `PostSignVerificationError`: signing with `verify=True` wrote the output and the check that
+  should have confirmed it did not. A file exists at `path`. `outcome` says which of three
+  situations it is, and two of the three say do not sign again:
+
+  | `outcome` | what is known | what to do |
+  |---|---|---|
+  | `"failed"` | a self-contained signature, PDF or XAdES, is not intact. Nothing else it could be | delete it and sign again |
+  | `"detached-mismatch"` | a `.p7s` does not verify against the file in `covers`. Either the signature is not intact or that file changed after signing, and this cannot tell which | find out which file was meant to be covered first. Re-signing would sign whatever it holds now |
+  | `"inconclusive"` | the check could not run: the verifier raised, or the output could not be read back. Nothing is known | retry the verification, not the signing, which would add a second signature to a document whose first was never examined |
+
+  `covers` is the file a detached signature is over, and `None` otherwise. None of the three is in
+  `BatchSignError.completed`: all three leave something that cannot be handed to anybody. Was a
+  bare `RuntimeError` before 1.14.0, or whatever the verifier happened to raise. *New in 1.14.0.*
 - `DetachedOriginalRequiredError`: a detached `.p7s` was given to `verify()` with no original to
   check it against, and the `<x>.p7s -> <x>` sibling is missing. Carries `p7s_path` and `expected`,
   so a GUI can name the file it wants. The two files routinely travel separately by email, so this
   is a recoverable situation, not a programming error.
-- `BatchSignError`: `sign_files()` stopped at one file. Carries `completed` (the reports for
-  everything already written, still on disk), `failed_index`, `failed_path`, and the real failure
-  as `__cause__`.
+- `BatchSignError`: `sign_files()` stopped at one file. Carries `completed` (finished outputs,
+  which can include the file at `failed_index`), `failed_index`, `failed_path`,
+  `callback_error` for a `progress` or `should_continue` that raised, and the real failure as
+  `__cause__`.
 - `BatchSignCancelled`: `sign_files()` was asked to stop through `should_continue`, and did, at a
   file boundary. Carries `completed` and `stopped_before`. Not a `BatchSignError`, on purpose.
 

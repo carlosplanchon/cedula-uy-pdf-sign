@@ -25,5 +25,10 @@ is rejected regardless of how it got here.
   to a copy that validates a real cédula chain, so the source is interchangeable under the
   fingerprint pin. The two certificates are byte-for-byte identical to those fingerprints.
 
-To refresh or override these at runtime, use `firmauy fetch-cas` (re-downloads, with a crt.sh
-fallback), `firmauy fetch-cas --from-file <pem>`, or `verify-* --ca-file <pem>`.
+To re-fetch *these same pinned certificates* into a per-user cache, use `firmauy fetch-cas`
+(re-downloads, with a crt.sh fallback) or `firmauy fetch-cas --from-file <pem>`. Neither can
+introduce a different certificate: bytes that do not match a fingerprint above are ignored.
+
+To verify against *different* anchors, which is what an issuer rotation needs until a firmauy
+release updates these fingerprints, use `verify-* --ca-file <pem>`. That is the one path here
+that overrides rather than refreshes, and it is deliberately not pinned.

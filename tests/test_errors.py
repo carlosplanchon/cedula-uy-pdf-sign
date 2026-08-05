@@ -18,7 +18,10 @@ from firmauy.errors import (
     CertificateNotValidError,
     FirmaUYError,
     IncorrectPinError,
+    OutputAccessControlError,
+    OutputCommittedError,
     OutputExistsError,
+    PostSignVerificationError,
     PinError,
     PinLockedError,
     ReaderNotFoundError,
@@ -31,7 +34,8 @@ def test_every_domain_error_is_a_firmauy_error_and_not_a_builtin_one():
     for cls in (
         ReaderNotFoundError, CardNotFoundError, PinError, IncorrectPinError, PinLockedError,
         TokenNotFoundError, CertificateError, CertificateNotFoundError, CertificateNotValidError,
-        SigningKeyNotFoundError, OutputExistsError,
+        SigningKeyNotFoundError, OutputExistsError, OutputAccessControlError,
+        OutputCommittedError, PostSignVerificationError,
     ):
         exc = cls("boom")
         assert isinstance(exc, FirmaUYError)
@@ -182,3 +186,32 @@ def test_batch_sign_cancelled_defaults_to_nothing_done():
     exc = BatchSignCancelled("stopped")
     assert exc.completed == []
     assert exc.stopped_before == -1
+
+
+@pytest.mark.parametrize("kwargs,why", [
+    ({"outcome": "typo"}, "an outcome nobody named"),
+    ({"outcome": "Failed"}, "the right word spelled differently"),
+    ({"outcome": "detached-mismatch"}, "a detached mismatch with no second file"),
+    ({"outcome": "failed", "covers": "doc.bin"}, "a second file where there is only one"),
+    ({"outcome": "inconclusive", "covers": "doc.bin"}, "the same, from the other outcome"),
+])
+def test_an_impossible_post_sign_state_cannot_be_built(kwargs, why):
+    """The field exists so a program can branch without reading prose, which only works if every
+    value it can hold is one the contract names. A scan of the literals in the signing module
+    cannot see a construction built dynamically, a typo in another module, or a caller raising it
+    directly."""
+    from firmauy.errors import PostSignVerificationError
+
+    with pytest.raises(ValueError):
+        PostSignVerificationError("x", **kwargs)
+
+
+def test_the_states_the_contract_does_name_all_build():
+    from firmauy.errors import PostSignVerificationError
+
+    assert PostSignVerificationError("x", outcome="failed").covers is None
+    assert PostSignVerificationError("x", outcome="inconclusive").outcome == "inconclusive"
+    detached = PostSignVerificationError("x", outcome="detached-mismatch", covers="doc.bin")
+    assert detached.covers == "doc.bin"
+    assert set(PostSignVerificationError.OUTCOMES) == {"failed", "detached-mismatch",
+                                                       "inconclusive"}

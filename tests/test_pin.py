@@ -47,3 +47,68 @@ class TestGetPinEmpty:
         monkeypatch.setattr("sys.stdin", io.StringIO(raw))
         with pytest.raises(RuntimeError, match="Empty PIN"):
             get_pin(PinSource.stdin, env_var=None, fd=None)
+
+
+# --- what never reaches the card ----------------------------------------------
+#
+# A wrong PIN is not free. The cédula allows a handful of tries and then blocks, and unblocking
+# means going somewhere in person. So anything the card could not possibly accept is refused
+# here, at no cost, rather than spent as an attempt. Both backends come through this one
+# function: the native path used to check the length and the encoding, let letters through, and
+# tell the user in the same message that a PIN must be digits.
+
+class TestResolveFinalPin:
+    def _resolve(self, value):
+        from firmauy.signing import _resolve_final_pin
+
+        return _resolve_final_pin(value, None)
+
+    def test_a_plain_pin_passes(self):
+        assert self._resolve("1234") == "1234"
+        assert self._resolve("12345678") == "12345678"
+
+    def test_letters_never_reach_the_card(self):
+        from firmauy.errors import PinError
+
+        with pytest.raises(PinError, match="digits only"):
+            self._resolve("abcd")
+
+    def test_a_typo_that_slips_one_letter_in_is_caught(self):
+        """The realistic case, and the one that cost an attempt: a finger off by one key."""
+        from firmauy.errors import PinError
+
+        with pytest.raises(PinError, match="digits only"):
+            self._resolve("12e4")
+
+    def test_digits_that_are_not_ascii_are_refused(self):
+        """str.isdigit() is true for these and the card would never take them. Without the ascii
+        check the encode one layer down would raise instead, past this guard."""
+        from firmauy.errors import PinError
+
+        for exotic in ("١٢٣٤", "①②③④"):
+            with pytest.raises(PinError, match="digits only"):
+                self._resolve(exotic)
+
+    def test_too_short_and_too_long_are_refused(self):
+        from firmauy.errors import PinError
+
+        with pytest.raises(PinError, match="4 to 8 digits"):
+            self._resolve("123")
+        with pytest.raises(PinError, match="4 to 8 digits"):
+            self._resolve("123456789")
+
+    def test_an_empty_pin_still_says_empty(self):
+        """It has its own message, because the likely cause differs: an unset variable or an
+        empty file, not a typo."""
+        from firmauy.errors import PinError
+
+        with pytest.raises(PinError, match="Empty PIN"):
+            self._resolve("")
+
+    def test_the_provider_is_validated_too(self):
+        """The CLI's --pin-source handling arrives as a callback, and it is not exempt."""
+        from firmauy.errors import PinError
+        from firmauy.signing import _resolve_final_pin
+
+        with pytest.raises(PinError, match="digits only"):
+            _resolve_final_pin(None, lambda: "no-soy-un-pin")

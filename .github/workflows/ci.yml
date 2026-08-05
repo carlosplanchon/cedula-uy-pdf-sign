@@ -49,6 +49,34 @@ jobs:
       - name: Run tests
         run: uv run pytest
 
+  # The two searching checks, both on every pull request and every push to main. The exhaustive
+  # TSTInfo sweep is half a minute of work that found two escapes which had survived three
+  # reviews and 385 deterministic tests, so leaving it archived was never defensible. The deep
+  # property profile covers what the sweep cannot walk through: combined damage, and sampled
+  # verification times across a hundred-year horizon. Procedure and acceptance criteria for both
+  # are in docs/security-invariants.md.
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # pyscard build deps only; the sweep uses software keys, so no SoftHSM or OpenSC.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcsclite-dev swig
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --group dev
+      - name: Run the sweep
+        run: FIRMAUY_SWEEP=1 uv run pytest tests/test_sweep_tstinfo.py -q
+      # The deep property profile belongs here rather than in `test`, which already runs the
+      # shallow one across five Python versions. Rare counterexamples do not care which
+      # interpreter finds them, and this way the matrix stays fast.
+      - name: Run the deep property profile
+        run: FIRMAUY_DEEP=1 uv run pytest tests/test_properties_timestamp.py -q
+
   build:
     runs-on: ubuntu-latest
     steps:

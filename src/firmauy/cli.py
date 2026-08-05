@@ -59,6 +59,7 @@ from firmauy.national_ca import (
 from firmauy.pdf_verify import verify_pdf
 from firmauy.xml_verify import verify_xml
 from firmauy.cms_verify import verify_cms
+from firmauy.errors import OutputCommittedError
 from firmauy._shared import (
     _INDICATION_RANK,
     _collect_doctor_checks,
@@ -144,7 +145,10 @@ TsaUrlOpt = Annotated[
         help=(
             "URL of a Time Stamping Authority (TSA). Embeds independent, "
             "trusted-time evidence in the signature. Optional: the Uruguayan "
-            "cédula signing flow does not require it."
+            "cédula signing flow does not require it. Credentials require https, "
+            "whether they arrive through --tsa-user / --tsa-header or inside the URL. "
+            "A secret placed in a query parameter cannot be told apart from any other "
+            "parameter and is not detected, so do not put one there."
         ),
     ),
 ]
@@ -672,6 +676,7 @@ def sign_pdf_batch(
 
             ok_count = 0
             err_count = 0
+            warn_count = 0
 
             for input_pdf, output_pdf in jobs:
                 try:
@@ -702,14 +707,31 @@ def sign_pdf_batch(
                         _verify_after_pdf(output_pdf)
                     typer.secho(f"OK:    {output_pdf}", fg=typer.colors.GREEN)
                     ok_count += 1
+                except OutputCommittedError as exc:
+                    # Written, committed, only its mode is wrong. Counting it as an error said
+                    # the file was not produced while it sat there complete, and the summary
+                    # undercounted. It is signed, so it counts as signed, and the line says what
+                    # still needs doing.
+                    # The verification step runs after the signing call returns, so asking for
+                    # it and landing here means it never ran. Saying OK would report a check
+                    # that did not happen.
+                    label = "SIGNED (not verified)" if verify else "SIGNED"
+                    typer.secho(f"{label}: {output_pdf}", fg=typer.colors.YELLOW)
+                    typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
+                    ok_count += 1
+                    warn_count += 1
                 except Exception as exc:
                     typer.secho(f"ERROR: {input_pdf}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
                     err_count += 1
 
         typer.echo("")
-        typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}.")
+        typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}."
+                   + (f" Needing a chmod: {warn_count}." if warn_count else ""))
 
-        if err_count:
+        if err_count or warn_count:
+            # A file needing a chmod was signed, so it is not an error, but the command did not
+            # do everything it was asked to. Reporting success would let a script ship a document
+            # whose permissions were never set.
             raise typer.Exit(code=1)
 
     except typer.Exit:
@@ -902,6 +924,7 @@ def sign_xml_batch(
 
             ok_count = 0
             err_count = 0
+            warn_count = 0
 
             for input_xml, output_xml in jobs:
                 try:
@@ -918,14 +941,31 @@ def sign_xml_batch(
                         _verify_after_xml(output_xml)
                     typer.secho(f"OK:    {output_xml}", fg=typer.colors.GREEN)
                     ok_count += 1
+                except OutputCommittedError as exc:
+                    # Written, committed, only its mode is wrong. Counting it as an error said
+                    # the file was not produced while it sat there complete, and the summary
+                    # undercounted. It is signed, so it counts as signed, and the line says what
+                    # still needs doing.
+                    # The verification step runs after the signing call returns, so asking for
+                    # it and landing here means it never ran. Saying OK would report a check
+                    # that did not happen.
+                    label = "SIGNED (not verified)" if verify else "SIGNED"
+                    typer.secho(f"{label}: {output_xml}", fg=typer.colors.YELLOW)
+                    typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
+                    ok_count += 1
+                    warn_count += 1
                 except Exception as exc:
                     typer.secho(f"ERROR: {input_xml}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
                     err_count += 1
 
         typer.echo("")
-        typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}.")
+        typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}."
+                   + (f" Needing a chmod: {warn_count}." if warn_count else ""))
 
-        if err_count:
+        if err_count or warn_count:
+            # A file needing a chmod was signed, so it is not an error, but the command did not
+            # do everything it was asked to. Reporting success would let a script ship a document
+            # whose permissions were never set.
             raise typer.Exit(code=1)
 
     except typer.Exit:
@@ -1112,6 +1152,7 @@ def sign_any_batch(
 
             ok_count = 0
             err_count = 0
+            warn_count = 0
 
             for input_file, output_p7s in jobs:
                 try:
@@ -1126,14 +1167,31 @@ def sign_any_batch(
                         _verify_after_cms(input_file, output_p7s)
                     typer.secho(f"OK:    {output_p7s}", fg=typer.colors.GREEN)
                     ok_count += 1
+                except OutputCommittedError as exc:
+                    # Written, committed, only its mode is wrong. Counting it as an error said
+                    # the file was not produced while it sat there complete, and the summary
+                    # undercounted. It is signed, so it counts as signed, and the line says what
+                    # still needs doing.
+                    # The verification step runs after the signing call returns, so asking for
+                    # it and landing here means it never ran. Saying OK would report a check
+                    # that did not happen.
+                    label = "SIGNED (not verified)" if verify else "SIGNED"
+                    typer.secho(f"{label}: {output_p7s}", fg=typer.colors.YELLOW)
+                    typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
+                    ok_count += 1
+                    warn_count += 1
                 except Exception as exc:
                     typer.secho(f"ERROR: {input_file}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
                     err_count += 1
 
         typer.echo("")
-        typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}.")
+        typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}."
+                   + (f" Needing a chmod: {warn_count}." if warn_count else ""))
 
-        if err_count:
+        if err_count or warn_count:
+            # A file needing a chmod was signed, so it is not an error, but the command did not
+            # do everything it was asked to. Reporting success would let a script ship a document
+            # whose permissions were never set.
             raise typer.Exit(code=1)
 
     except typer.Exit:
@@ -1446,6 +1504,7 @@ def sign_batch(
 
             ok_count = 0
             err_count = 0
+            warn_count = 0
             for input_path, kind, output in jobs:
                 try:
                     if kind == "pdf":
@@ -1477,6 +1536,19 @@ def sign_batch(
                             _verify_after_cms(input_path, output)
                     typer.secho(f"OK:    {output}  ({kind})", fg=typer.colors.GREEN)
                     ok_count += 1
+                except OutputCommittedError as exc:
+                    # Written, committed, only its mode is wrong. Counting it as an error said
+                    # the file was not produced while it sat there complete, and the summary
+                    # undercounted. It is signed, so it counts as signed, and the line says what
+                    # still needs doing.
+                    # The verification step runs after the signing call returns, so asking for
+                    # it and landing here means it never ran. Saying OK would report a check
+                    # that did not happen.
+                    label = "SIGNED (not verified)" if verify else "SIGNED"
+                    typer.secho(f"{label}: {output}  ({kind})", fg=typer.colors.YELLOW)
+                    typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
+                    ok_count += 1
+                    warn_count += 1
                 except Exception as exc:
                     typer.secho(f"ERROR: {input_path}: {_format_error(exc)}",
                                 fg=typer.colors.RED, err=True)
@@ -1489,8 +1561,12 @@ def sign_batch(
                 err_count += 1
 
         typer.echo("")
-        typer.echo(f"Signed: {ok_count}/{len(items)}. Errors: {err_count}.")
-        if err_count:
+        typer.echo(f"Signed: {ok_count}/{len(items)}. Errors: {err_count}."
+                   + (f" Needing a chmod: {warn_count}." if warn_count else ""))
+        if err_count or warn_count:
+            # A file needing a chmod was signed, so it is not an error, but the command did not
+            # do everything it was asked to. Reporting success would let a script ship a document
+            # whose permissions were never set.
             raise typer.Exit(code=1)
 
     except typer.Exit:

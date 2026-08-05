@@ -1,0 +1,27 @@
+# What a source distribution carries beyond the code.
+#
+# The point of this release line is that its claims can be checked, and most of that evidence is
+# not the code: docs/security-invariants.md is the traceability matrix, the tests are what it
+# points at, uv.lock pins the versions all of it was measured against, and the workflow says when
+# the searching checks run. An sdist that ships the verifier and drops that hands over the part
+# that is hardest to reconstruct.
+#
+# NOTICE is not a choice. Apache-2.0 section 4(d) requires it to travel with any distribution,
+# and this one names the bundled national CA certificates and disclaims affiliation with AGESIC.
+include NOTICE SECURITY.md ARCHITECTURE.md CONTRIBUTING.md
+recursive-include docs *.md
+
+# Every test file, not the ones setuptools guesses at. Its inherited default rule picks up
+# `test*.py`, which matches all 22 test modules and misses conftest.py, so the sdist shipped a
+# suite that collapsed on the first fixture that needed it. Tests that cannot run are worse than
+# no tests: they invite the reader to conclude the suite is broken.
+recursive-include tests *.py
+
+# docs/development.md tells the reader to run this, and that document now travels.
+recursive-include scripts *.sh
+
+# The exact versions everything was measured against, and the definition of when the searching
+# checks run. Both are claims the security document makes, and neither is checkable from the
+# artifact alone without them.
+include uv.lock
+include .github/workflows/ci.yml

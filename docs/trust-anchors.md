@@ -133,5 +133,12 @@ so `--tsa-ca` is bring-your-own: supply the CA of whichever TSA you used. Embedd
 at signing time (the AdES `-LT` / `-LTA` levels, for full archival validation) is out of scope: it is
 not implemented, independent of whether the CRL endpoints are reachable.
 
-The bundled national CA certificates expire (2031) and can be rotated by the issuer; re-run
-`firmauy fetch-cas` to refresh from the network, or use `--ca-file`.
+The bundled national CA certificates expire (2031) and can be rotated by the issuer before then.
+
+**A rotation needs a new firmauy release, or `--ca-file`.** `fetch-cas` does not help: it accepts
+bytes only when they match a fingerprint pinned in the source (`ACRN_SHA256` and `MICA_SHA256` in
+`national_ca.py`), so a genuinely new certificate is rejected by the very check that makes the
+download safe. That is the pin working as designed, and it is the trade: nobody can slip a
+different root past it, including the issuer, until a human updates the pin and ships it. Until
+that release exists, `--ca-file` is the way to verify against the new anchors, which is also the
+tested path for anyone who wants to supply their own.

@@ -1,6 +1,7 @@
-"""Shared fixtures: in-memory x509 test certificates."""
+"""Shared fixtures: in-memory x509 test certificates, and the Hypothesis profiles."""
 
 import datetime
+import os
 
 import pytest
 from cryptography import x509
@@ -65,3 +66,28 @@ def cert_valid() -> x509.Certificate:
 def cert_expired() -> x509.Certificate:
     past = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=400)
     return _build_cert(_SUBJECT, _ISSUER, past)
+
+
+# --- property-based testing profiles ------------------------------------------
+#
+# Two depths for the same properties. The shallow one runs with the normal suite, across every
+# Python version in the matrix, so it has to stay cheap enough that nobody is tempted to skip it.
+# The deep one runs once in the sweep job, on every pull request and every push to main, where
+# finding something rare matters more than finishing quickly.
+#
+#   FIRMAUY_DEEP=1    the deep profile, forty times the examples
+#
+# Every example does a real cryptographic verification whose cost depends on how far into
+# validation the damage is caught, so there is no meaningful per-example deadline to enforce.
+# The suite's own runtime is the budget that matters, and the example count is what sets it.
+from hypothesis import HealthCheck, settings  # noqa: E402
+
+settings.register_profile(
+    "shallow", max_examples=50, deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+settings.register_profile(
+    "deep", max_examples=2000, deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+settings.load_profile("deep" if os.environ.get("FIRMAUY_DEEP") else "shallow")
