@@ -14,6 +14,14 @@ Sign and verify PDF, XML and any file with your Uruguayan national ID card over 
 
 > ⚠️ **Disclaimer**: This tool performs **local, technical** signing and verification using open standards. It is experimental, community-maintained, **not affiliated with AGESIC**, **not officially certified**, and **does not guarantee legal validity**. For official validation, use the [official AGESIC validator](https://firma.gub.uy/); see [Legal and compliance](#legal-and-compliance) for details.
 
+> ✅ **Always cross-check what you sign.** Before sending or relying on a signed document, upload
+> it to [firma.gub.uy](https://firma.gub.uy/), the State validator, and keep its answer. Every
+> time, for every document that matters. firmauy checking its own output is not independent
+> evidence, and the arbiter your counterparty will use is the State's validator: agreement with
+> it is [tracked, not assumed](docs/security-invariants.md#the-conformance-protocol). The portal
+> validates PDF, so a detached `.p7s` cannot be checked there, which is worth weighing when you
+> choose a format for something important.
+
 ## Quick start
 
 > Requires **Linux** with the Uruguayan cédula PKCS#11 middleware installed. The full smart-card setup is in [Requirements](#requirements) and [Setup on Arch Linux](#setup-on-arch-linux).
@@ -25,6 +33,9 @@ firmauy list-tokens                    # confirm the card is detected
 firmauy sign-pdf input.pdf             # sign -> input_firmado.pdf (prompts for the PIN)
 firmauy verify input_firmado.pdf       # verify (auto-detects format; offline chain check)
 ```
+
+Then upload `input_firmado.pdf` at [firma.gub.uy](https://firma.gub.uy/). **Always.** See the
+disclaimer above for why.
 
 ## Overview
 
@@ -255,6 +266,11 @@ It is intended for developers and technically proficient users who understand th
 - is provided **for technical and educational purposes**
 
 While it uses standard cryptographic mechanisms and aims to align with Uruguayan digital signature practices, the generated signatures should not be assumed valid for legal or regulatory use without independent verification. Users are solely responsible for ensuring that generated signatures meet any legal or regulatory requirements applicable to their use case.
+
+In practice that is one habit: every signed document that matters gets uploaded to
+[firma.gub.uy](https://firma.gub.uy/) after signing, every time. The project keeps a public
+record of agreement between its verdicts and the State validator's, and redacted result rows are
+welcome: see the [conformance protocol](docs/security-invariants.md#the-conformance-protocol).
 
 ### Intended use
 

@@ -324,7 +324,13 @@ these semantics. Both carry their own suites.
 1. **Conformance against the official validator.** Everything above proves the verifier does not
    crash and does not misreport its own model. None of it proves the verdicts agree with
    [firma.gub.uy](https://firma.gub.uy/) on real cédula signatures, and that agreement is the
-   first thing an institutional reviewer should ask about. Manual today.
+   first thing an institutional reviewer should ask about. Manual today, and in two parts that
+   need different people. What one signer with one card can close is the format side: their own
+   signatures, through both validators. What needs breadth is the certificate side, because cards
+   are issued across years and two chip generations, and the Ministerio publishes three CRL
+   streams while the one card measured points at one of them, so nothing says every card does.
+   The [conformance protocol](#the-conformance-protocol) below turns that breadth into redacted
+   one-line reports anybody can contribute.
 2. **Revocation end to end.** [CA.4-5] asks for certificate validation "a través de OCSP (Online
    Certificate Status Protocol), CRL (Certificate Revocation List) o equivalente", and firmauy
    does it on request with `--check-revocation`. What is missing is confirmation against a live
@@ -332,6 +338,14 @@ these semantics. Both carry their own suites.
    covers it, which is why the clause appears here and not in the matrix. Measured on 2026-08-05:
    the cédula's chain publishes no OCSP at any level, and its CRL is 12.6 MB with 269,202
    entries, so "o equivalente" is doing real work in that sentence.
+
+   Two halves, and only one closes with a valid card. The negative half, a current certificate
+   passing with the CRL fetched and applied, is one signature and one afternoon. The positive
+   half, a revoked certificate actually being caught, needs what no valid card can provide: a
+   signature made with a certificate that was later revoked, which every renewal creates. It also
+   carries an interpretation trap: under a trusted timestamp predating the revocation, VALID can
+   be the correct answer, so the clean positive case is an unstamped signature verified today.
+   The [conformance protocol](#the-conformance-protocol) accepts rows for either half.
 3. **AdES -LT and -LTA are not implemented**, so a timestamp is judged optimistically at its own
    asserted `genTime`. Documented in [trust-anchors.md](trust-anchors.md) and [api.md](api.md).
 4. **Coherent structural mutation is still out of reach.** Both searching checks preserve the
@@ -358,6 +372,56 @@ these semantics. Both carry their own suites.
    reviews. So is signature and certificate verification outside the timestamp path. Neither has
    a matrix, a clause mapping or a searching check, so nothing here should be read as evidence
    about either.
+
+## The conformance protocol
+
+Gaps 1 and 2 do not close with more code, and they do not close with one person either. They
+close with variety: certificates issued in different years, cards of both chip generations,
+signatures that aged into revocation. No single signer holds all of that. And a corpus of real
+signed documents cannot be collected at all, because a signature file carries the signer's name,
+their document number and their certificate. What can be collected is verdicts.
+
+**A row, not a document.** [`scripts/conformance_row.py`](../scripts/conformance_row.py) verifies
+a signed file locally, extracts only what identifies the infrastructure, and prints one markdown
+row. A row may never contain the signer's name, their document number, the certificate serial,
+or the file's name. The script enforces that mechanically, refusing to print a row that carries
+any signer field the verifier saw, and
+[`tests/test_conformance_row.py`](../tests/test_conformance_row.py) holds the refusal in place
+with a fixture that contains a fake document number, so its absence from the output means the
+redaction ran rather than that there was nothing to redact. What a row does carry is public:
+the issuing CA's name, which CRL the certificate points at, the algorithm, the TSA's name, the
+two verdicts, and whether they agree.
+
+**Contributing one:**
+
+```bash
+uv run scripts/conformance_row.py firmado.pdf
+# upload the same file at https://firma.gub.uy/ and read its answer, then:
+uv run scripts/conformance_row.py firmado.pdf --firma-gub-uy "correcta"
+# a second row with revocation consulted says more:
+uv run scripts/conformance_row.py firmado.pdf --check-revocation --firma-gub-uy "correcta"
+```
+
+Paste the output into a GitHub issue titled "Conformance row" at
+[github.com/carlosplanchon/firmauy/issues](https://github.com/carlosplanchon/firmauy/issues).
+
+**What the portal answers, measured 2026-08-05.** firma.gub.uy describes its validation for PDF
+("Podés comprobar la validez de un documento PDF") and answers with one of three phrases, taken
+from the portal's own interface text: "La firma del documento es correcta.", "La firma del
+documento no es correcta", "Se encontró un problema al analizar el documento." Quote the one you
+saw. Whether the portal accepts XAdES XML is unconfirmed, and a detached `.p7s` has no place
+there, so CAdES rows will usually carry a pending portal verdict, which is itself information.
+There is no API and none is wanted here: a person uploads, a person reads, the row records.
+
+**What each axis of variety buys.** The certificate year covers profile changes across
+emissions. The CRL column covers the three streams the Ministerio publishes, of which the one
+card measured points at `crl.crl` and nothing says every card does. The chip column, v4 or v5
+and self-reported, covers the two applet generations. And a row whose certificate was since
+revoked, verified without a timestamp and with revocation on, is the one observation that can
+show detection detecting.
+
+As of 2026-08-05 there are no rows. The protocol exists so that the first ones come from more
+wallets than one.
 
 ## References
 
