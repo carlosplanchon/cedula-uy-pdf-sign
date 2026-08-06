@@ -115,7 +115,9 @@ def _flat(value):
 
 
 def _portal(raw: str) -> str:
-    """The portal's answer as one of its three phrases, or verbatim when it said something else."""
+    """The portal's answer as one of its three phrases, or, when it said something else, a
+    bounded and whitespace-normalized rendering of it: the row records what the portal said,
+    and 60 characters is enough to recognize a phrase nobody has catalogued yet."""
     norm = raw.strip().strip(".").lower()
     if norm in ("", "pending"):
         return "pending"
