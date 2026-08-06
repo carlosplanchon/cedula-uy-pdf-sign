@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "firmauy"
-version = "1.14.2"
+version = "1.14.3"
 authors = [
   { name = "Carlos A. Planchón", email = "carlosplanchon@cognitialabs.com" }
 ]
@@ -29,7 +29,7 @@ classifiers = [
 ]
 dependencies = [
     "asn1crypto>=1.5.1",
-    "cryptography>=49.0.0",
+    "cryptography>=50.0.0",
     "lxml>=6.1.1",
     "pillow>=10.0.0",
     "pyhanko[pkcs11]>=0.35.1",
