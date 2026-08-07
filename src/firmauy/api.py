@@ -52,6 +52,7 @@ from firmauy.errors import (
 # firmauy.constants pulls in the standard library's enum and dataclasses and nothing else.
 from firmauy.constants import ImageMode as ImageMode
 from firmauy.constants import SignAs as SignAs
+from firmauy.constants import StampCorner as StampCorner
 from firmauy.constants import (
     DEFAULT_IMAGE_OPACITY,
     DEFAULT_PKCS11_LIB,
@@ -224,6 +225,11 @@ class PdfAppearance:
     """
 
     page: int = -1                                  # -1 is the last page
+    # A corner is resolved against that page's own MediaBox while the file is open, so it lands
+    # correctly on any paper size. It keeps the box's size and changes only its place, which is
+    # why the default corner reproduces the default coordinates exactly. None uses them as given.
+    corner: Optional[str] = None
+    margin: float = 20.0                            # points from the two edges of the corner
     x1: int = DEFAULT_X1
     y1: int = DEFAULT_Y1
     x2: int = DEFAULT_X2
@@ -240,6 +246,10 @@ class PdfAppearance:
 
     def __post_init__(self) -> None:
         ImageMode(self.image_mode)                  # ValueError names the valid modes
+        if self.corner is not None:
+            StampCorner(self.corner)                # ValueError names the four corners
+            if self.margin < 0:
+                raise ValueError(f"margin cannot be negative, got {self.margin}")
         if not 0.0 <= self.image_opacity <= 1.0:
             raise ValueError(f"image_opacity must be between 0 and 1, got {self.image_opacity}")
         if self.x2 <= self.x1 or self.y2 <= self.y1:
@@ -254,6 +264,8 @@ class PdfAppearance:
         of that internal is not something a caller should be able to depend on."""
         return dict(
             page=self.page, x1=self.x1, y1=self.y1, x2=self.x2, y2=self.y2,
+            corner=StampCorner(self.corner) if self.corner is not None else None,
+            margin=self.margin,
             timezone=self.timezone,
             image_path=Path(self.image) if self.image is not None else None,
             image_mode=ImageMode(self.image_mode),

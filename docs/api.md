@@ -184,7 +184,7 @@ and whole-file coverage. Returns a `SignReport`.
 `appearance` takes a `PdfAppearance` and decides where the stamp goes and what it says. It applies
 to `sign_pdf()`, and to `sign()` and `sign_files()` when the resolved type is a PDF. Omit it and
 you get exactly what firmauy has always drawn: the last page, a 205x70 box in the bottom-left
-corner, all five lines, no image. *New in 1.16.0.*
+corner, all five lines, no image. *New in 1.16.0, with `corner` and `margin` in 1.17.0.*
 
 ```python
 from firmauy.api import PdfAppearance, sign_pdf
@@ -200,7 +200,9 @@ sign_pdf("contract.pdf", pin, appearance=PdfAppearance(
 | Field | Default | What it does |
 |---|---|---|
 | `page` | `-1` | Which page carries the stamp. `-1` is the last one. |
-| `x1`, `y1`, `x2`, `y2` | `20, 20, 225, 90` | The box, in PDF points from the bottom-left of the page. |
+| `corner` | `None` | `"bottom-left"`, `"bottom-right"`, `"top-left"` or `"top-right"`, resolved against that page's real size. `None` uses the coordinates below as given. The values are the `StampCorner` enum, also importable from `firmauy.api`. |
+| `margin` | `20` | Points between the stamp and the two page edges of `corner`. |
+| `x1`, `y1`, `x2`, `y2` | `20, 20, 225, 90` | The box, in PDF points from the bottom-left of the page. With a `corner` set, only their size is used and the corner decides the place. |
 | `image` | `None` | A PNG or JPEG to draw in the box. |
 | `image_mode` | `"background"` | `background` (behind the text, faded), `side` (left of it), `only` (image, no text). The values are the `ImageMode` enum, also importable from `firmauy.api`. |
 | `image_opacity` | `0.2` | How faded, in `background` mode. |
@@ -210,6 +212,25 @@ sign_pdf("contract.pdf", pin, appearance=PdfAppearance(
 | `show_document` | `True` | "Documento: ..." |
 | `show_date` | `True` | "Fecha: ..." |
 | `show_issuer` | `True` | The issuing authority's name. |
+
+**Use `corner` rather than coordinates when you can.** A corner is resolved while the PDF is open,
+against the MediaBox of the page that will carry the stamp, so it lands correctly whatever the
+paper is. Absolute coordinates cannot: the default 205x70 box placed bottom-right of an A4 spans
+x=370 to 575, and on an A5, which is 420 points wide, that hangs 156 points off the paper. Pages in
+one file can differ, and `page=-1` with a corner reads the size of that last page rather than
+assuming the first one's.
+
+```python
+from firmauy.api import PdfAppearance, StampCorner, sign_pdf
+
+# Correct on A4, A5, Letter and anything else.
+sign_pdf("contract.pdf", pin, appearance=PdfAppearance(corner="bottom-right"))
+[member.value for member in StampCorner]   # ['bottom-left', 'bottom-right', 'top-left', 'top-right']
+```
+
+`corner="bottom-left"` with the default margin is exactly the box firmauy has always drawn, so
+naming the corner it already used moves nothing. A box larger than the page raises rather than
+drawing off the paper, and a margin wider than the space left over is clamped onto the page.
 
 Two things worth knowing before you use it.
 
@@ -227,7 +248,8 @@ Values are validated when the `PdfAppearance` is constructed rather than during 
 coordinate, an opacity outside 0 to 1, an unknown mode or a missing image file all raise before the
 PIN is asked for and before the card spends one of its tries.
 
-The same options are on the CLI, where the five lines are turned off with `--no-stamp-title`,
+The same options are on the CLI, as `--corner` and `--margin`, and the five lines are
+turned off with `--no-stamp-title`,
 `--no-stamp-signer`, `--no-stamp-document`, `--no-stamp-date` and `--no-stamp-issuer`.
 
 ## Sign an XML

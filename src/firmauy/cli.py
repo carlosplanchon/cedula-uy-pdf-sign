@@ -34,7 +34,6 @@ from firmauy.cert_utils import (
 )
 from firmauy.ci import complete_ci, validate_ci
 from firmauy.constants import (
-    StampFields,
     APPEARANCE_HEIGHT,
     APPEARANCE_WIDTH,
     DEFAULT_IMAGE_OPACITY,
@@ -46,6 +45,8 @@ from firmauy.constants import (
     DEFAULT_Y2,
     ImageMode,
     SignAs,
+    StampCorner,
+    StampFields,
 )
 from firmauy.pin import PinSource, get_pin
 from firmauy.pkcs11_utils import (
@@ -164,6 +165,8 @@ VerifyOpt = Annotated[bool, typer.Option("--verify", help="After signing, re-ver
 ImageOpt = Annotated[Optional[Path], typer.Option("--image", exists=True, dir_okay=False, readable=True, help="Image (PNG/JPEG) to show in the signature appearance. Cosmetic only; does not affect the signature.")]
 ImageModeOpt = Annotated[ImageMode, typer.Option("--image-mode", help="Where the --image goes: background (behind the text, default), side (left of the text), or only (image, no text).")]
 ImageOpacityOpt = Annotated[float, typer.Option("--image-opacity", min=0.0, max=1.0, help="Opacity of the --image in background mode (0..1). Default 0.2 (subtle watermark).")]
+CornerOpt = Annotated[Optional[StampCorner], typer.Option("--corner", help="Place the visible signature in a corner of the page, resolved against that page's real size: bottom-left, bottom-right, top-left, top-right. Overrides --x1/--y1/--x2/--y2 as a position, keeping the box's size.")]
+MarginOpt = Annotated[float, typer.Option("--margin", min=0.0, help="Points between the stamp and the two page edges of --corner. Default 20.")]
 NoStampTitleOpt = Annotated[bool, typer.Option("--no-stamp-title", help="Leave \"Firma electronica avanzada, UY\" out of the visible stamp.")]
 NoStampSignerOpt = Annotated[bool, typer.Option("--no-stamp-signer", help="Leave \"Firmado por\" out of the visible stamp.")]
 NoStampDocumentOpt = Annotated[bool, typer.Option("--no-stamp-document", help="Leave \"Documento\" (the certificate serial) out of the visible stamp.")]
@@ -451,6 +454,8 @@ def sign_pdf(
     no_stamp_document: NoStampDocumentOpt = False,
     no_stamp_date: NoStampDateOpt = False,
     no_stamp_issuer: NoStampIssuerOpt = False,
+    corner: CornerOpt = None,
+    margin: MarginOpt = 20.0,
 ) -> None:
     """Sign a PDF with a Uruguayan cédula via PKCS#11 and pyHanko."""
     if output_pdf is None:
@@ -538,6 +543,7 @@ def sign_pdf(
                 image_mode=image_mode,
                 image_opacity=image_opacity,
                 stamp_fields=StampFields(title=not no_stamp_title, signer=not no_stamp_signer, document=not no_stamp_document, date=not no_stamp_date, issuer=not no_stamp_issuer),
+                corner=corner, margin=margin,
                 allow_hybrid_xref=allow_hybrid_xref, notify=_warn,
             )
 
@@ -605,6 +611,8 @@ def sign_pdf_batch(
     no_stamp_document: NoStampDocumentOpt = False,
     no_stamp_date: NoStampDateOpt = False,
     no_stamp_issuer: NoStampIssuerOpt = False,
+    corner: CornerOpt = None,
+    margin: MarginOpt = 20.0,
 ) -> None:
     """Sign multiple PDFs with a single PKCS#11 session (batch mode)."""
     try:
@@ -719,6 +727,7 @@ def sign_pdf_batch(
                         image_mode=image_mode,
                         image_opacity=image_opacity,
                         stamp_fields=StampFields(title=not no_stamp_title, signer=not no_stamp_signer, document=not no_stamp_document, date=not no_stamp_date, issuer=not no_stamp_issuer),
+                        corner=corner, margin=margin,
                         allow_hybrid_xref=allow_hybrid_xref, notify=_warn,
                     )
                     if verify:
@@ -1293,6 +1302,8 @@ def sign_cmd(
     no_stamp_document: NoStampDocumentOpt = False,
     no_stamp_date: NoStampDateOpt = False,
     no_stamp_issuer: NoStampIssuerOpt = False,
+    corner: CornerOpt = None,
+    margin: MarginOpt = 20.0,
 ) -> None:
     """Sign a file with a Uruguayan cédula, auto-detecting the signature type.
 
@@ -1358,6 +1369,7 @@ def sign_cmd(
                     timezone=timezone, field_name=field_name, force=force, overwrite=overwrite,
                     image_path=image, image_mode=image_mode, image_opacity=image_opacity,
                     stamp_fields=StampFields(title=not no_stamp_title, signer=not no_stamp_signer, document=not no_stamp_document, date=not no_stamp_date, issuer=not no_stamp_issuer),
+                    corner=corner, margin=margin,
                     allow_hybrid_xref=allow_hybrid_xref, notify=_warn,
                 )
             elif kind == "xml":
@@ -1447,6 +1459,8 @@ def sign_batch(
     no_stamp_document: NoStampDocumentOpt = False,
     no_stamp_date: NoStampDateOpt = False,
     no_stamp_issuer: NoStampIssuerOpt = False,
+    corner: CornerOpt = None,
+    margin: MarginOpt = 20.0,
 ) -> None:
     """Sign many files of mixed types in a single PKCS#11 session.
 
@@ -1545,6 +1559,7 @@ def sign_batch(
                             timezone=timezone, field_name=field_name, force=force, overwrite=overwrite,
                             image_path=image, image_mode=image_mode, image_opacity=image_opacity,
                     stamp_fields=StampFields(title=not no_stamp_title, signer=not no_stamp_signer, document=not no_stamp_document, date=not no_stamp_date, issuer=not no_stamp_issuer),
+                    corner=corner, margin=margin,
                             allow_hybrid_xref=allow_hybrid_xref, notify=_warn,
                         )
                         if verify:

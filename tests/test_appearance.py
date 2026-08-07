@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from firmauy.signing import _box_in_corner, _page_media_box
 from firmauy.appearance import (
     ensure_output_parent,
     make_appearance_pdf,
@@ -11,7 +12,9 @@ from firmauy.appearance import (
     wrap_line,
 )
 from firmauy.constants import (ImageMode, STAMP_FONT_NAME, STAMP_FONT_SIZE,
-                               STAMP_LEADING, STAMP_TEXT_Y, StampFields)
+                               STAMP_LEADING, STAMP_TEXT_Y, StampCorner, StampFields,
+                               APPEARANCE_HEIGHT, APPEARANCE_WIDTH,
+                               DEFAULT_X1, DEFAULT_X2, DEFAULT_Y1, DEFAULT_Y2)
 
 
 class TestWrapLine:
@@ -205,3 +208,83 @@ class TestStampFields:
         make_appearance_pdf(out, signer=" ".join(["APELLIDO"] * 8), cert_serial="0123ABCD",
                             ts="06/08/2026 10:30", issuer=" ".join(["AUTORIDAD"] * 6))
         assert self._first_baseline(Path(out).read_bytes()) == STAMP_TEXT_Y
+
+
+class TestStampCorner:
+    """Placing the box against a corner of the page, resolved from that page's real size.
+
+    The reason this lives in the core and not in a caller: a corner cannot be turned into
+    coordinates without the page size, and only the code holding the open PDF knows it. A box
+    computed for A4 and applied to an A5 lands 156 points off the paper, which the last test here
+    states as a number rather than as a worry.
+    """
+
+    A4 = (0.0, 0.0, 595.28, 841.89)
+    A5 = (0.0, 0.0, 419.53, 595.28)
+    BOX = (APPEARANCE_WIDTH, APPEARANCE_HEIGHT)     # 205 x 70, the default stamp
+
+    @pytest.mark.parametrize("page", [A4, A5])
+    @pytest.mark.parametrize("corner", list(StampCorner))
+    def test_every_corner_of_every_page_size_lands_on_the_page(self, page, corner):
+        left, bottom, right, top = page
+        x1, y1, x2, y2 = _box_in_corner(page, corner, 20.0, *self.BOX)
+
+        assert left <= x1 and bottom <= y1
+        assert x2 <= right and y2 <= top
+        assert (round(x2 - x1), round(y2 - y1)) == self.BOX      # the size is never changed
+
+    def test_the_default_corner_reproduces_the_coordinates_it_replaces(self):
+        """bottom-left with the default margin has to be the box firmauy has always drawn, or
+        asking for the corner it already used would move every existing stamp."""
+        assert _box_in_corner(self.A4, StampCorner.bottom_left, 20.0, *self.BOX) == (
+            DEFAULT_X1, DEFAULT_Y1, DEFAULT_X2, DEFAULT_Y2)
+
+    def test_each_corner_is_the_corner_it_says(self):
+        left, bottom, right, top = self.A4
+        width, height = self.BOX
+
+        assert _box_in_corner(self.A4, StampCorner.bottom_right, 20.0, *self.BOX)[2] == right - 20
+        assert _box_in_corner(self.A4, StampCorner.top_left, 20.0, *self.BOX)[3] == top - 20
+        far = _box_in_corner(self.A4, StampCorner.top_right, 20.0, *self.BOX)
+        assert (far[2], far[3]) == (right - 20, top - 20)
+        near = _box_in_corner(self.A4, StampCorner.bottom_left, 20.0, *self.BOX)
+        assert (near[0], near[1]) == (left + 20, bottom + 20)
+
+    def test_a_box_that_cannot_fit_says_so_instead_of_drawing_off_the_paper(self):
+        with pytest.raises(ValueError, match="does not fit on it at all"):
+            _box_in_corner(self.A5, StampCorner.top_left, 20.0, 900, 70)
+
+    def test_a_margin_wider_than_the_leftover_space_is_clamped_onto_the_page(self):
+        """A 205 point box on a 420 point page leaves 215 points to share. A 300 point margin
+        cannot be honoured, and sliding off the paper is the wrong way to say so."""
+        left, bottom, right, top = self.A5
+        x1, y1, x2, y2 = _box_in_corner(self.A5, StampCorner.bottom_right, 300.0, *self.BOX)
+
+        assert left <= x1 and x2 <= right
+        assert bottom <= y1 and y2 <= top
+
+    def test_the_page_size_is_read_from_the_page_and_not_assumed(self, tmp_path):
+        """The whole feature. A file whose pages differ has to give a different box per page."""
+        import io
+
+        from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+        from reportlab.lib.pagesizes import A4, A5
+        from reportlab.pdfgen import canvas as rl_canvas
+
+        buf = io.BytesIO()
+        c = rl_canvas.Canvas(buf, pagesize=A4)
+        c.showPage()
+        c.setPageSize(A5)
+        c.showPage()
+        c.save()
+        buf.seek(0)
+        writer = IncrementalPdfFileWriter(buf)
+
+        first = _page_media_box(writer, 0)
+        last = _page_media_box(writer, -1)
+        assert round(first[2]) == round(A4[0])
+        assert round(last[2]) == round(A5[0])      # -1 is the last page, and it is the A5 one
+
+        # And the failure this replaces, as a number: the A4 answer used on the A5 page.
+        wrong = _box_in_corner(first, StampCorner.bottom_right, 20.0, *self.BOX)
+        assert wrong[2] - last[2] > 150, "the A4 box would have hung off the A5 page"

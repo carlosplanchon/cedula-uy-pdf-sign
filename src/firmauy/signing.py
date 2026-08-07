@@ -62,6 +62,7 @@ from firmauy.constants import (
     DEFAULT_PKCS11_LIB,
     ImageMode,
     SignAs,
+    StampCorner,
     StampFields,
 )
 from firmauy.pkcs11_utils import (
@@ -912,6 +913,56 @@ def _atomic_write_bytes(path: Path, data: bytes, *, overwrite: bool = True) -> N
         out.write(data)
 
 
+# A page tree is a tree, and /MediaBox is inheritable, so a page may not carry one itself. Deep
+# enough for any real document and finite so a file with a /Parent cycle stops instead of hanging.
+_MAX_PAGE_TREE_DEPTH = 64
+
+
+def _page_media_box(writer, page: int) -> tuple[float, float, float, float]:
+    """The page's MediaBox, walking up the page tree for the inherited case.
+
+    Read from the writer rather than measured beforehand: the caller names a page, the page can be
+    any size, and pages in one file can differ. Measured against a two-page file whose pages are A4
+    and A5, and page=-1 correctly gives the A5 one.
+    """
+    ref, _ = writer.find_page_for_modification(page)
+    node = ref.get_object()
+    for _ in range(_MAX_PAGE_TREE_DEPTH):
+        box = node.get("/MediaBox")
+        if box is not None:
+            return tuple(float(value) for value in box)
+        parent = node.get("/Parent")
+        if parent is None:
+            break
+        node = parent.get_object()
+    raise RuntimeError(
+        "the PDF does not state a page size: no /MediaBox on the page or any of its parents, "
+        "which the PDF specification requires. Pass explicit coordinates instead of a corner.")
+
+
+def _box_in_corner(media_box, corner: StampCorner, margin: float,
+                   width: float, height: float) -> tuple[float, float, float, float]:
+    """Place a width x height box `margin` points from the two edges that meet at `corner`.
+
+    The MediaBox is not always anchored at the origin, so the page's own left and bottom are used
+    rather than zero. The result is clamped to stay on the page, which only matters when the margin
+    is larger than the space left over.
+    """
+    left, bottom, right, top = media_box
+    if width > right - left or height > top - bottom:
+        raise ValueError(
+            f"the stamp box is {width:.0f}x{height:.0f} points and the page is "
+            f"{right - left:.0f}x{top - bottom:.0f}, so it does not fit on it at all.")
+
+    at_right = corner in (StampCorner.bottom_right, StampCorner.top_right)
+    at_top = corner in (StampCorner.top_left, StampCorner.top_right)
+    x1 = right - margin - width if at_right else left + margin
+    y1 = top - margin - height if at_top else bottom + margin
+    x1 = min(max(x1, left), right - width)
+    y1 = min(max(y1, bottom), top - height)
+    return x1, y1, x1 + width, y1 + height
+
+
 def _sign_one_pdf(
     *,
     input_pdf: Path,
@@ -935,6 +986,8 @@ def _sign_one_pdf(
     image_mode: ImageMode = ImageMode.background,
     image_opacity: float = DEFAULT_IMAGE_OPACITY,
     stamp_fields: StampFields = StampFields(),
+    corner: Optional[StampCorner] = None,
+    margin: float = 20.0,
     allow_hybrid_xref: bool = False,
     notify: Optional[Callable[[str], None]] = None,
 ) -> None:
@@ -973,6 +1026,13 @@ def _sign_one_pdf(
                     f"Warning: {input_pdf.name} has hybrid cross-reference sections. Signing due to "
                     "--allow-hybrid-xref. The signature may not be equivalent for older PDF readers."
                 )
+
+        # Here and not before: the page size is only knowable with the file open, which is the
+        # whole reason a corner cannot be resolved by the caller. The box keeps the size it was
+        # given and only its place changes, so a default box in its default corner is unmoved.
+        if corner is not None:
+            x1, y1, x2, y2 = _box_in_corner(
+                _page_media_box(writer, page), corner, margin, x2 - x1, y2 - y1)
 
         existing_fields = list(fields.enumerate_sig_fields(writer))
         matching = [(name, val) for name, val, _ in existing_fields if name == field_name]

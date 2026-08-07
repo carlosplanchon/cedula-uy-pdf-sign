@@ -33,6 +33,19 @@ class StampFields:
         return any((self.title, self.signer, self.document, self.date, self.issuer))
 
 
+class StampCorner(str, Enum):
+    """Which corner of the page the visible stamp is placed against.
+
+    A corner is resolved against the page's own MediaBox while the PDF is open, which is the only
+    place the page size is known. Absolute coordinates cannot express "bottom right" without it:
+    a box computed for A4 falls off an A5.
+    """
+    bottom_left = "bottom-left"     # where the stamp has always gone
+    bottom_right = "bottom-right"
+    top_left = "top-left"
+    top_right = "top-right"
+
+
 class ImageMode(str, Enum):
     """Where an --image goes inside the signature appearance box."""
     background = "background"   # behind the text (subtle watermark)
