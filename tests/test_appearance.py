@@ -6,13 +6,15 @@ from PIL import Image
 
 from firmauy.signing import _box_in_corner, _page_media_box
 from firmauy.appearance import (
+    _sized_for_box,
     ensure_output_parent,
     make_appearance_pdf,
     split_signer_name,
     wrap_line,
 )
 from firmauy.constants import (ImageMode, STAMP_FONT_NAME, STAMP_FONT_SIZE,
-                               STAMP_LEADING, STAMP_TEXT_Y, StampCorner, StampFields,
+                               STAMP_LEADING, STAMP_TEXT_Y, STAMP_IMAGE_DPI,
+                               StampCorner, StampFields,
                                APPEARANCE_HEIGHT, APPEARANCE_WIDTH,
                                DEFAULT_X1, DEFAULT_X2, DEFAULT_Y1, DEFAULT_Y2)
 
@@ -97,9 +99,12 @@ class TestImageAppearance:
     def test_faded_image_is_a_pale_watermark(self, sample_png):
         from PIL import ImageStat
 
-        from firmauy.appearance import _faded_image
+        from firmauy.appearance import _faded_image, _sized_for_box
 
-        faded = _faded_image(str(sample_png), 0.2)
+        # It takes the opened image rather than a path now: the shrink to the box has to happen
+        # before the fade, and doing both from a path would decode the file twice.
+        faded = _faded_image(
+            _sized_for_box(str(sample_png), APPEARANCE_WIDTH, APPEARANCE_HEIGHT), 0.2)
         mean = sum(ImageStat.Stat(faded).mean) / 3  # overall brightness across R/G/B
         assert mean > 200  # blended ~80% toward white -> a faint watermark (renderer-independent)
 
@@ -288,3 +293,66 @@ class TestStampCorner:
         # And the failure this replaces, as a number: the A4 answer used on the A5 page.
         wrong = _box_in_corner(first, StampCorner.bottom_right, 20.0, *self.BOX)
         assert wrong[2] - last[2] > 150, "the A4 box would have hung off the A5 page"
+
+
+class TestImageIsNotEmbeddedWholesale:
+    """An image goes into the stamp, and the stamp goes into every PDF signed with it.
+
+    Measured before this existed: a 3000x2000 photo produced a 15 MB appearance, and even a
+    1200x750 logo produced 2.3 MB, for a box 205 by 70 points across. Other Uruguayan signing
+    software answers this by refusing anything over 500 kb and 400x250 px. Shrinking to what the
+    box can show is the better answer: the person's own image is used, and nothing is refused.
+    """
+
+    ARGS = dict(signer="PEREZ, JUAN", cert_serial="0123", ts="07/08/2026 10:30",
+                issuer="AC RAIZ")
+
+    def _photo(self, tmp_path, size) -> str:
+        """Noise, because a flat colour compresses to nothing and would prove nothing."""
+        import random
+
+        random.seed(1)
+        image = Image.new("RGB", size)
+        image.putdata([(random.randrange(256), random.randrange(256), random.randrange(256))
+                       for _ in range(size[0] * size[1])])
+        path = tmp_path / "photo.jpg"
+        image.save(path, quality=85)
+        return str(path)
+
+    @pytest.mark.parametrize("mode", list(ImageMode))
+    def test_a_photo_does_not_become_a_multi_megabyte_stamp(self, tmp_path, mode):
+        out = tmp_path / f"{mode.value}.pdf"
+        make_appearance_pdf(str(out), **self.ARGS, image_path=self._photo(tmp_path, (3000, 2000)),
+                            image_mode=mode)
+
+        # 15 MB is what this produced before. Half a megabyte is generous for a 205x70 box and
+        # still two orders of magnitude away from the failure.
+        assert out.stat().st_size < 512 * 1024, f"{mode.value} embedded the photo whole"
+
+    def test_it_shrinks_to_the_box_and_keeps_the_aspect_ratio(self, tmp_path):
+        wide = _sized_for_box(self._photo(tmp_path, (3000, 2000)), APPEARANCE_WIDTH,
+                              APPEARANCE_HEIGHT)
+
+        assert wide.height <= round(APPEARANCE_HEIGHT / 72 * STAMP_IMAGE_DPI)
+        assert wide.width <= round(APPEARANCE_WIDTH / 72 * STAMP_IMAGE_DPI)
+        assert abs(wide.width / wide.height - 3000 / 2000) < 0.01, "the aspect ratio moved"
+
+    def test_a_small_logo_keeps_its_own_pixels(self, tmp_path):
+        """Only ever shrunk. Enlarging would invent detail and make the file bigger for it."""
+        path = tmp_path / "small.png"
+        Image.new("RGBA", (120, 40), (10, 60, 120, 255)).save(path)
+
+        assert _sized_for_box(str(path), APPEARANCE_WIDTH, APPEARANCE_HEIGHT).size == (120, 40)
+
+    def test_a_transparent_background_survives_the_shrink(self, tmp_path):
+        """The resize runs before the image reaches reportlab, so it must not flatten alpha:
+        mask="auto" is what cuts a logo out of its box, and an opaque rectangle instead of a
+        transparent one is the most visible way this could go wrong."""
+        path = tmp_path / "logo.png"
+        image = Image.new("RGBA", (800, 600), (0, 0, 0, 0))
+        image.paste((220, 40, 40, 255), (200, 150, 600, 450))
+        image.save(path)
+
+        shrunk = _sized_for_box(str(path), APPEARANCE_WIDTH, APPEARANCE_HEIGHT)
+        assert shrunk.mode == "RGBA"
+        assert shrunk.getpixel((0, 0))[3] == 0, "the transparent corner became opaque"

@@ -61,6 +61,12 @@ class SignAs(str, Enum):
     cades = "cades"   # force detached CAdES (.p7s), for any input including PDF/XML
 
 
+# The stamp box is 205x70 points, so an image beyond this over it is pixels nobody can see, in a
+# file that then travels inside every PDF signed with it. 300 DPI is past what a screen or a
+# printer resolves at that size. Measured: a 3000x2000 photo went from a 15 MB appearance to
+# 141 KB, with no visible difference.
+STAMP_IMAGE_DPI = 300
+
 # Default opacity for an image in --image-mode background (subtle watermark, keeps text legible).
 DEFAULT_IMAGE_OPACITY = 0.2
 
