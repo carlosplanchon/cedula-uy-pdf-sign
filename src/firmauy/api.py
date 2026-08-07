@@ -46,12 +46,22 @@ from firmauy.errors import (
     TokenNotFoundError as TokenNotFoundError,
 )
 
-# The type of the ``sign_as`` argument of sign(), sign_files() and output_path_for(), here for the
-# same reason as the exceptions: it belongs to those three signatures, and a caller that wants to
-# reject a bad value before touching the card should not have to reach past this module to name the
-# valid ones. It used to be imported lazily inside each of them, which protected nothing, since
-# firmauy.constants imports the standard library's enum and nothing else.
+# The vocabulary of the signing arguments, here for the same reason as the exceptions: these
+# belong to the public signatures, and a caller that wants to reject a bad value before touching
+# the card should not have to reach past this module to name the valid ones. Free to import, since
+# firmauy.constants pulls in the standard library's enum and dataclasses and nothing else.
+from firmauy.constants import ImageMode as ImageMode
 from firmauy.constants import SignAs as SignAs
+from firmauy.constants import (
+    DEFAULT_IMAGE_OPACITY,
+    DEFAULT_PKCS11_LIB,
+    DEFAULT_TIMEZONE,
+    DEFAULT_X1,
+    DEFAULT_X2,
+    DEFAULT_Y1,
+    DEFAULT_Y2,
+    StampFields,
+)
 
 
 @dataclass(frozen=True)
@@ -185,6 +195,77 @@ class CertInfo:
     not_after: str
     digital_signature: Optional[bool]
     pem: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PdfAppearance:
+    """Where a PDF's visible stamp goes on the page, and which of its five lines it prints.
+
+    The stamp is drawn on a page and is not the signature. Nothing here changes what is signed,
+    what a verifier reads, or whether the file validates: a stamp with every line turned off and
+    a signature that reaches the national root is still VALID, and a stamp that lists everything
+    over a broken signature is still INVALID. What it changes is what a person sees when they
+    open the document.
+
+    Defaults reproduce exactly what firmauy drew before this class existed: the last page, a
+    205x70 box in the bottom-left corner, all five lines, no image. That default box can land on
+    top of a footer or the last lines of text, which is what ``x1``/``y1``/``x2``/``y2`` are for.
+
+    ``image`` fills the box behind the text (``image_mode="background"``, faded to
+    ``image_opacity``), beside it (``"side"``), or replaces it (``"only"``). ``show_document`` is
+    the certificate's serial rather than the cédula number, so leaving it on identifies the
+    certificate without printing somebody's national ID on every copy of the file.
+
+    Values are checked here, on construction, rather than deep inside a signing call. A wrong
+    coordinate or a missing image file is worth learning before the PIN is entered and the card
+    has spent one of its tries.
+
+    .. versionadded:: 1.16.0
+    """
+
+    page: int = -1                                  # -1 is the last page
+    x1: int = DEFAULT_X1
+    y1: int = DEFAULT_Y1
+    x2: int = DEFAULT_X2
+    y2: int = DEFAULT_Y2
+    image: Optional[Union[str, Path]] = None
+    image_mode: str = ImageMode.background.value
+    image_opacity: float = DEFAULT_IMAGE_OPACITY
+    timezone: str = DEFAULT_TIMEZONE
+    show_title: bool = True                         # "Firma electrónica avanzada, UY"
+    show_signer: bool = True                        # "Firmado por: ..."
+    show_document: bool = True                      # "Documento: ..." (the certificate serial)
+    show_date: bool = True                          # "Fecha: ..."
+    show_issuer: bool = True                        # the issuing authority's name
+
+    def __post_init__(self) -> None:
+        ImageMode(self.image_mode)                  # ValueError names the valid modes
+        if not 0.0 <= self.image_opacity <= 1.0:
+            raise ValueError(f"image_opacity must be between 0 and 1, got {self.image_opacity}")
+        if self.x2 <= self.x1 or self.y2 <= self.y1:
+            raise ValueError(
+                f"the stamp box is empty or inverted: ({self.x1}, {self.y1}) to "
+                f"({self.x2}, {self.y2}). x2 must exceed x1 and y2 must exceed y1.")
+        if self.image is not None and not Path(self.image).is_file():
+            raise FileNotFoundError(f"stamp image not found: {self.image}")
+
+    def _pdf_kwargs(self) -> dict:
+        """The arguments `_sign_one_pdf` takes for the appearance. Private on purpose: the shape
+        of that internal is not something a caller should be able to depend on."""
+        return dict(
+            page=self.page, x1=self.x1, y1=self.y1, x2=self.x2, y2=self.y2,
+            timezone=self.timezone,
+            image_path=Path(self.image) if self.image is not None else None,
+            image_mode=ImageMode(self.image_mode),
+            image_opacity=self.image_opacity,
+            stamp_fields=StampFields(
+                title=self.show_title, signer=self.show_signer, document=self.show_document,
+                date=self.show_date, issuer=self.show_issuer,
+            ),
+        )
+
+
+_DEFAULT_APPEARANCE = PdfAppearance()
 
 
 def verify(
@@ -392,6 +473,7 @@ def sign_pdf(
     tsa_url: Optional[str] = None,
     overwrite: bool = False,
     verify: bool = False,
+    appearance: Optional[PdfAppearance] = None,
 ) -> SignReport:
     """Sign a PDF with the cédula, producing a PAdES-signed PDF (the signature is embedded).
 
@@ -412,14 +494,6 @@ def sign_pdf(
         _sign_one_pdf,
         _signing_session,
         _verify_after_pdf,
-    )
-    from firmauy.constants import (
-        DEFAULT_PKCS11_LIB,
-        DEFAULT_TIMEZONE,
-        DEFAULT_X1,
-        DEFAULT_X2,
-        DEFAULT_Y1,
-        DEFAULT_Y2,
     )
 
     pin, pin_provider = _resolve_pin_args(pin, pin_provider)
@@ -448,8 +522,8 @@ def sign_pdf(
             input_pdf=path, output_pdf=out, pkcs11_signer=ctx.pyhanko_signer(),
             signer_name=ctx.signer_name, issuer_name=ctx.issuer_name, cert_serial=ctx.cert_serial,
             timestamper=timestamper, meta=meta,
-            page=-1, x1=DEFAULT_X1, y1=DEFAULT_Y1, x2=DEFAULT_X2, y2=DEFAULT_Y2,
-            timezone=DEFAULT_TIMEZONE, field_name="Sig1", force=False, overwrite=overwrite,
+            field_name="Sig1", force=False, overwrite=overwrite,
+            **(appearance or _DEFAULT_APPEARANCE)._pdf_kwargs(),
         )
         signer, issuer, serial = ctx.signer_name, ctx.issuer_name, ctx.cert_serial
 
@@ -544,6 +618,7 @@ def sign(
     tsa_url: Optional[str] = None,
     overwrite: bool = False,
     verify: bool = False,
+    appearance: Optional[PdfAppearance] = None,
 ) -> SignReport:
     """Sign a file with the cédula, picking the signature type from the content.
 
@@ -568,7 +643,10 @@ def sign(
         overwrite=overwrite, verify=verify,
     )
     if kind == "pdf":
-        return sign_pdf(path, pin, pin_provider=pin_provider, reason=reason, location=location, **common)
+        # reason, location and appearance are the three that only mean something for a PDF, so
+        # they travel on this branch alone rather than in `common`.
+        return sign_pdf(path, pin, pin_provider=pin_provider, reason=reason, location=location,
+                        appearance=appearance, **common)
     if kind == "xml":
         return sign_xml(path, pin, pin_provider=pin_provider, **common)
     return sign_file(path, pin, pin_provider=pin_provider, **common)
@@ -593,6 +671,7 @@ def sign_files(
     verify: bool = False,
     progress: Optional[Callable[[int, Path, Path], None]] = None,
     should_continue: Optional[Callable[[], bool]] = None,
+    appearance: Optional[PdfAppearance] = None,
 ) -> list[SignReport]:
     """Sign several files in a single signing session (one card session, one PIN check for all).
 
@@ -651,16 +730,12 @@ def sign_files(
         _verify_after_pdf,
         _verify_after_xml,
     )
-    from firmauy.constants import (
-        DEFAULT_PKCS11_LIB,
-        DEFAULT_TIMEZONE,
-        DEFAULT_X1,
-        DEFAULT_X2,
-        DEFAULT_Y1,
-        DEFAULT_Y2,
-    )
 
     pin, pin_provider = _resolve_pin_args(pin, pin_provider)
+    # Resolved once for the whole batch rather than per file: every PDF in a batch gets the same
+    # stamp, and building it here means a bad image path fails before the card is touched instead
+    # of part-way through, with some files already signed.
+    stamp = (appearance or _DEFAULT_APPEARANCE)._pdf_kwargs()
 
     items = [Path(p) for p in paths]
     if not items:
@@ -741,9 +816,8 @@ def sign_files(
                         input_pdf=p, output_pdf=out, pkcs11_signer=ctx.pyhanko_signer(),
                         signer_name=ctx.signer_name, issuer_name=ctx.issuer_name,
                         cert_serial=ctx.cert_serial, timestamper=timestamper, meta=meta,
-                        page=-1, x1=DEFAULT_X1, y1=DEFAULT_Y1, x2=DEFAULT_X2, y2=DEFAULT_Y2,
-                        timezone=DEFAULT_TIMEZONE, field_name="Sig1", force=False,
-                        overwrite=overwrite,
+                        field_name="Sig1", force=False, overwrite=overwrite,
+                        **stamp,
                     )
                     if verify:
                         _verify_after_pdf(out)

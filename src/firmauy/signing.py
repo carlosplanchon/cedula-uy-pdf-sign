@@ -62,6 +62,7 @@ from firmauy.constants import (
     DEFAULT_PKCS11_LIB,
     ImageMode,
     SignAs,
+    StampFields,
 )
 from firmauy.pkcs11_utils import (
     cert_is_expired,
@@ -933,6 +934,7 @@ def _sign_one_pdf(
     image_path: Optional[Path] = None,
     image_mode: ImageMode = ImageMode.background,
     image_opacity: float = DEFAULT_IMAGE_OPACITY,
+    stamp_fields: StampFields = StampFields(),
     allow_hybrid_xref: bool = False,
     notify: Optional[Callable[[str], None]] = None,
 ) -> None:
@@ -1018,6 +1020,7 @@ def _sign_one_pdf(
                 image_path=str(image_path) if image_path else None,
                 image_mode=image_mode,
                 image_opacity=image_opacity,
+                fields=stamp_fields,
             )
 
             pdf_signer = signers.PdfSigner(

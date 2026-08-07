@@ -179,6 +179,57 @@ It takes the same PIN and backend options as `sign_file` (`native`/`reader` or
 `tsa_url` adds an RFC 3161 timestamp, and `verify=True` re-checks the fresh signature for integrity
 and whole-file coverage. Returns a `SignReport`.
 
+### The visible stamp
+
+`appearance` takes a `PdfAppearance` and decides where the stamp goes and what it says. It applies
+to `sign_pdf()`, and to `sign()` and `sign_files()` when the resolved type is a PDF. Omit it and
+you get exactly what firmauy has always drawn: the last page, a 205x70 box in the bottom-left
+corner, all five lines, no image. *New in 1.16.0.*
+
+```python
+from firmauy.api import PdfAppearance, sign_pdf
+
+# The default box can land on a footer or the last lines of text. This moves it.
+sign_pdf("contract.pdf", pin, appearance=PdfAppearance(page=1, x1=320, y1=60, x2=560, y2=130))
+
+# A logo behind the text, and a stamp that does not print the certificate serial.
+sign_pdf("contract.pdf", pin, appearance=PdfAppearance(
+    image="logo.png", image_mode="background", image_opacity=0.15, show_document=False))
+```
+
+| Field | Default | What it does |
+|---|---|---|
+| `page` | `-1` | Which page carries the stamp. `-1` is the last one. |
+| `x1`, `y1`, `x2`, `y2` | `20, 20, 225, 90` | The box, in PDF points from the bottom-left of the page. |
+| `image` | `None` | A PNG or JPEG to draw in the box. |
+| `image_mode` | `"background"` | `background` (behind the text, faded), `side` (left of it), `only` (image, no text). The values are the `ImageMode` enum, also importable from `firmauy.api`. |
+| `image_opacity` | `0.2` | How faded, in `background` mode. |
+| `timezone` | `"America/Montevideo"` | The zone the printed date is rendered in. |
+| `show_title` | `True` | "Firma electrónica avanzada, UY" |
+| `show_signer` | `True` | "Firmado por: ..." |
+| `show_document` | `True` | "Documento: ..." |
+| `show_date` | `True` | "Fecha: ..." |
+| `show_issuer` | `True` | The issuing authority's name. |
+
+Two things worth knowing before you use it.
+
+**The stamp is not the signature.** It is drawn on a page. Turning every line off, or replacing
+the text with a logo, changes nothing about what is signed, what a verifier reads, or whether the
+file validates. The signer, the issuer and the time live inside the signature, covered by the
+cryptography, and `verify()` reads them from there.
+
+**`show_document` is the certificate's serial, not the cédula number.** Other Uruguayan signing
+software prints the national ID there. firmauy does not, on purpose: the serial identifies the
+certificate just as precisely without putting somebody's document number on every copy of a file
+they send out.
+
+Values are validated when the `PdfAppearance` is constructed rather than during signing, so a bad
+coordinate, an opacity outside 0 to 1, an unknown mode or a missing image file all raise before the
+PIN is asked for and before the card spends one of its tries.
+
+The same options are on the CLI, where the five lines are turned off with `--no-stamp-title`,
+`--no-stamp-signer`, `--no-stamp-document`, `--no-stamp-date` and `--no-stamp-issuer`.
+
 ## Sign an XML
 
 `sign_xml()` signs an XML and returns it with a XAdES-BES signature embedded (XAdES-T with

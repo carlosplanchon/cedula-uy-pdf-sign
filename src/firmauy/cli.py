@@ -34,6 +34,7 @@ from firmauy.cert_utils import (
 )
 from firmauy.ci import complete_ci, validate_ci
 from firmauy.constants import (
+    StampFields,
     APPEARANCE_HEIGHT,
     APPEARANCE_WIDTH,
     DEFAULT_IMAGE_OPACITY,
@@ -163,6 +164,11 @@ VerifyOpt = Annotated[bool, typer.Option("--verify", help="After signing, re-ver
 ImageOpt = Annotated[Optional[Path], typer.Option("--image", exists=True, dir_okay=False, readable=True, help="Image (PNG/JPEG) to show in the signature appearance. Cosmetic only; does not affect the signature.")]
 ImageModeOpt = Annotated[ImageMode, typer.Option("--image-mode", help="Where the --image goes: background (behind the text, default), side (left of the text), or only (image, no text).")]
 ImageOpacityOpt = Annotated[float, typer.Option("--image-opacity", min=0.0, max=1.0, help="Opacity of the --image in background mode (0..1). Default 0.2 (subtle watermark).")]
+NoStampTitleOpt = Annotated[bool, typer.Option("--no-stamp-title", help="Leave \"Firma electronica avanzada, UY\" out of the visible stamp.")]
+NoStampSignerOpt = Annotated[bool, typer.Option("--no-stamp-signer", help="Leave \"Firmado por\" out of the visible stamp.")]
+NoStampDocumentOpt = Annotated[bool, typer.Option("--no-stamp-document", help="Leave \"Documento\" (the certificate serial) out of the visible stamp.")]
+NoStampDateOpt = Annotated[bool, typer.Option("--no-stamp-date", help="Leave \"Fecha\" out of the visible stamp.")]
+NoStampIssuerOpt = Annotated[bool, typer.Option("--no-stamp-issuer", help="Leave the issuing authority out of the visible stamp.")]
 NativeOpt = Annotated[bool, typer.Option("--native", help="Sign natively over PC/SC APDUs instead of PKCS#11: talk to the cédula directly, with no PKCS#11 middleware (--pkcs11-lib/--token-label are then ignored, and --cert-id is rejected, as the card has a single signing certificate). Experimental, not AGESIC-certified. Needs pcscd and a reader, not the PKCS#11 module.")]
 ReaderOpt = Annotated[Optional[str], typer.Option("--reader", help="PC/SC reader name (as shown by list-readers) for --native. Auto-detected when exactly one reader is present.")]
 AllowHybridXrefOpt = Annotated[bool, typer.Option("--allow-hybrid-xref", help="Sign PDFs that use hybrid cross-reference sections (opens the PDF non-strict). Off by default: such PDFs are rejected because the incremental signature may not be equivalent for all readers -- normalize with `qpdf in.pdf out.pdf` instead. Use at your own risk.")]
@@ -440,6 +446,11 @@ def sign_pdf(
     image: ImageOpt = None,
     image_mode: ImageModeOpt = ImageMode.background,
     image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
+    no_stamp_title: NoStampTitleOpt = False,
+    no_stamp_signer: NoStampSignerOpt = False,
+    no_stamp_document: NoStampDocumentOpt = False,
+    no_stamp_date: NoStampDateOpt = False,
+    no_stamp_issuer: NoStampIssuerOpt = False,
 ) -> None:
     """Sign a PDF with a Uruguayan cédula via PKCS#11 and pyHanko."""
     if output_pdf is None:
@@ -526,6 +537,7 @@ def sign_pdf(
                 image_path=image,
                 image_mode=image_mode,
                 image_opacity=image_opacity,
+                stamp_fields=StampFields(title=not no_stamp_title, signer=not no_stamp_signer, document=not no_stamp_document, date=not no_stamp_date, issuer=not no_stamp_issuer),
                 allow_hybrid_xref=allow_hybrid_xref, notify=_warn,
             )
 
@@ -588,6 +600,11 @@ def sign_pdf_batch(
     image: ImageOpt = None,
     image_mode: ImageModeOpt = ImageMode.background,
     image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
+    no_stamp_title: NoStampTitleOpt = False,
+    no_stamp_signer: NoStampSignerOpt = False,
+    no_stamp_document: NoStampDocumentOpt = False,
+    no_stamp_date: NoStampDateOpt = False,
+    no_stamp_issuer: NoStampIssuerOpt = False,
 ) -> None:
     """Sign multiple PDFs with a single PKCS#11 session (batch mode)."""
     try:
@@ -701,6 +718,7 @@ def sign_pdf_batch(
                         image_path=image,
                         image_mode=image_mode,
                         image_opacity=image_opacity,
+                        stamp_fields=StampFields(title=not no_stamp_title, signer=not no_stamp_signer, document=not no_stamp_document, date=not no_stamp_date, issuer=not no_stamp_issuer),
                         allow_hybrid_xref=allow_hybrid_xref, notify=_warn,
                     )
                     if verify:
@@ -1270,6 +1288,11 @@ def sign_cmd(
     image: ImageOpt = None,
     image_mode: ImageModeOpt = ImageMode.background,
     image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
+    no_stamp_title: NoStampTitleOpt = False,
+    no_stamp_signer: NoStampSignerOpt = False,
+    no_stamp_document: NoStampDocumentOpt = False,
+    no_stamp_date: NoStampDateOpt = False,
+    no_stamp_issuer: NoStampIssuerOpt = False,
 ) -> None:
     """Sign a file with a Uruguayan cédula, auto-detecting the signature type.
 
@@ -1334,6 +1357,7 @@ def sign_cmd(
                     timestamper=timestamper, meta=meta, page=page, x1=x1, y1=y1, x2=x2, y2=y2,
                     timezone=timezone, field_name=field_name, force=force, overwrite=overwrite,
                     image_path=image, image_mode=image_mode, image_opacity=image_opacity,
+                    stamp_fields=StampFields(title=not no_stamp_title, signer=not no_stamp_signer, document=not no_stamp_document, date=not no_stamp_date, issuer=not no_stamp_issuer),
                     allow_hybrid_xref=allow_hybrid_xref, notify=_warn,
                 )
             elif kind == "xml":
@@ -1418,6 +1442,11 @@ def sign_batch(
     image: ImageOpt = None,
     image_mode: ImageModeOpt = ImageMode.background,
     image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
+    no_stamp_title: NoStampTitleOpt = False,
+    no_stamp_signer: NoStampSignerOpt = False,
+    no_stamp_document: NoStampDocumentOpt = False,
+    no_stamp_date: NoStampDateOpt = False,
+    no_stamp_issuer: NoStampIssuerOpt = False,
 ) -> None:
     """Sign many files of mixed types in a single PKCS#11 session.
 
@@ -1515,6 +1544,7 @@ def sign_batch(
                             timestamper=timestamper, meta=meta, page=page, x1=x1, y1=y1, x2=x2, y2=y2,
                             timezone=timezone, field_name=field_name, force=force, overwrite=overwrite,
                             image_path=image, image_mode=image_mode, image_opacity=image_opacity,
+                    stamp_fields=StampFields(title=not no_stamp_title, signer=not no_stamp_signer, document=not no_stamp_document, date=not no_stamp_date, issuer=not no_stamp_issuer),
                             allow_hybrid_xref=allow_hybrid_xref, notify=_warn,
                         )
                         if verify:

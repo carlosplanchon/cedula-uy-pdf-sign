@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,8 @@ from firmauy.appearance import (
     split_signer_name,
     wrap_line,
 )
-from firmauy.constants import ImageMode, STAMP_FONT_NAME, STAMP_FONT_SIZE
+from firmauy.constants import (ImageMode, STAMP_FONT_NAME, STAMP_FONT_SIZE,
+                               STAMP_LEADING, STAMP_TEXT_Y, StampFields)
 
 
 class TestWrapLine:
@@ -135,3 +137,71 @@ class TestMakeAppearancePdf:
         with open(out, "rb") as f:
             header = f.read(4)
         assert header == b"%PDF"
+
+
+class TestStampFields:
+    """Which of the five lines the stamp prints, and where the block sits when some are off.
+
+    The bytes are searched directly because make_appearance_pdf sets setPageCompression(0), so
+    the text and its positioning operators are literal in the file. That is what makes it possible
+    to assert the default did not move by a single point, which is the thing that must not change:
+    every stamp firmauy has ever drawn used these coordinates.
+    """
+
+    ARGS = dict(signer="PEREZ PEREZ, JUAN", cert_serial="0123ABCD",
+                ts="06/08/2026 10:30", issuer="AC RAIZ NACIONAL")
+
+    def _render(self, tmp_path, name, **kw) -> bytes:
+        out = str(tmp_path / f"{name}.pdf")
+        make_appearance_pdf(out, **self.ARGS, **kw)
+        return Path(out).read_bytes()
+
+    def _first_baseline(self, data: bytes) -> float:
+        match = re.search(rb"1 0 0 1 [\d.]+ ([\d.]+) Tm", data)
+        assert match, "no text was drawn at all"
+        return float(match.group(1))
+
+    def test_every_line_is_printed_by_default(self, tmp_path):
+        data = self._render(tmp_path, "full")
+        for needle in (b"Firma electr", b"Firmado por", b"Documento", b"Fecha:", b"AC RAIZ"):
+            assert needle in data, f"{needle!r} is missing from the default stamp"
+
+    @pytest.mark.parametrize("field,gone,kept", [
+        ("title", b"Firma electr", b"Firmado por"),
+        ("signer", b"Firmado por", b"Documento"),
+        ("document", b"Documento", b"Fecha:"),
+        ("date", b"Fecha:", b"AC RAIZ"),
+        ("issuer", b"AC RAIZ", b"Firmado por"),
+    ])
+    def test_turning_one_line_off_removes_that_one_and_no_other(self, tmp_path, field, gone, kept):
+        data = self._render(tmp_path, field, fields=StampFields(**{field: False}))
+        assert gone not in data
+        assert kept in data
+
+    def test_turning_everything_off_draws_no_text_at_all(self, tmp_path):
+        data = self._render(tmp_path, "none",
+                            fields=StampFields(False, False, False, False, False))
+        for needle in (b"Firma electr", b"Firmado por", b"Documento", b"Fecha:", b"AC RAIZ"):
+            assert needle not in data
+
+    def test_the_default_block_still_starts_exactly_where_it_always_did(self, tmp_path):
+        """The regression this whole feature could have caused. Any change here silently moves
+        the stamp on every document signed with defaults."""
+        assert self._first_baseline(self._render(tmp_path, "default")) == STAMP_TEXT_Y
+
+    def test_a_shorter_block_slides_down_by_half_of_what_was_removed(self, tmp_path):
+        """Otherwise a one-line stamp hangs from the top of a 70pt box with all the air below it."""
+        one_off = self._render(tmp_path, "one_off", fields=StampFields(date=False))
+        assert self._first_baseline(one_off) == STAMP_TEXT_Y - STAMP_LEADING / 2
+
+        only_signer = self._render(tmp_path, "only_signer",
+                                   fields=StampFields(True, True, False, False, False))
+        assert self._first_baseline(only_signer) == STAMP_TEXT_Y - 3 * STAMP_LEADING / 2
+
+    def test_a_block_longer_than_five_lines_is_never_pushed_up(self, tmp_path):
+        """A name or issuer long enough to wrap already produces more than five lines. Moving
+        those up to "center" them would push the first line out through the top of the box."""
+        out = str(tmp_path / "long.pdf")
+        make_appearance_pdf(out, signer=" ".join(["APELLIDO"] * 8), cert_serial="0123ABCD",
+                            ts="06/08/2026 10:30", issuer=" ".join(["AUTORIDAD"] * 6))
+        assert self._first_baseline(Path(out).read_bytes()) == STAMP_TEXT_Y
