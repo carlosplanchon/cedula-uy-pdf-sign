@@ -208,6 +208,21 @@ report = sign("document.pdf", pin, native=True)   # -> PAdES, document_firmado.p
 Pass `sign_as="pdf"`, `"xml"` or `"cades"` to force a type instead of auto-detecting. `reason` and
 `location` apply only when the resolved type is a PDF. Returns a `SignReport`.
 
+The four accepted values are the `SignAs` enum, importable from `firmauy.api` alongside everything
+else. Use it to build a menu, or to turn a bad value into your own message before the card is
+touched, rather than hardcoding the strings or letting a `ValueError` surface from inside a signing
+call:
+
+```python
+from firmauy.api import SignAs
+
+[member.value for member in SignAs]     # ['auto', 'pdf', 'xml', 'cades']
+SignAs("pkcs7")                         # ValueError, and no card was touched
+```
+
+It applies to `sign()`, `sign_files()` and `output_path_for()`, which all take `sign_as`.
+*New in 1.15.0.*
+
 ## Sign several files in one session
 
 `sign_files()` signs a list of files through a single card session, so the PIN is checked once for

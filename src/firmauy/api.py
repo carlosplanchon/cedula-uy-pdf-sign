@@ -46,6 +46,13 @@ from firmauy.errors import (
     TokenNotFoundError as TokenNotFoundError,
 )
 
+# The type of the ``sign_as`` argument of sign(), sign_files() and output_path_for(), here for the
+# same reason as the exceptions: it belongs to those three signatures, and a caller that wants to
+# reject a bad value before touching the card should not have to reach past this module to name the
+# valid ones. It used to be imported lazily inside each of them, which protected nothing, since
+# firmauy.constants imports the standard library's enum and nothing else.
+from firmauy.constants import SignAs as SignAs
+
 
 @dataclass(frozen=True)
 class VerifyReport:
@@ -547,7 +554,6 @@ def sign(
     :class:`SignReport`; raises on any error.
     """
     from firmauy.signing import _resolve_sign_kind
-    from firmauy.constants import SignAs
 
     pin, pin_provider = _resolve_pin_args(pin, pin_provider)
 
@@ -652,7 +658,6 @@ def sign_files(
         DEFAULT_X2,
         DEFAULT_Y1,
         DEFAULT_Y2,
-        SignAs,
     )
 
     pin, pin_provider = _resolve_pin_args(pin, pin_provider)
@@ -812,7 +817,6 @@ def output_path_for(
 
     .. versionadded:: 1.10.0
     """
-    from firmauy.constants import SignAs
     from firmauy.signing import _output_path_for, _resolve_sign_kind
 
     p = Path(path)

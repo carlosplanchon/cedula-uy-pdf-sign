@@ -198,3 +198,18 @@ def test_the_post_sign_verification_error_is_reachable_from_the_public_api():
     from firmauy.errors import PostSignVerificationError
 
     assert api.PostSignVerificationError is PostSignVerificationError
+
+
+def test_the_sign_as_type_is_reachable_from_the_public_api():
+    """`sign_as` is an argument of three public functions, so its type belongs here too. A caller
+    that wants to reject a bad value before touching the card had to import firmauy.constants,
+    which is the one place firmauy-desktop reached past this module. The alternative, a hand-copied
+    tuple of the valid strings, forks the enum the day a fourth type is added.
+    """
+    from firmauy import api
+    from firmauy.constants import SignAs
+
+    assert api.SignAs is SignAs
+    # The values the three signatures document, so a consumer can build a menu from the enum
+    # instead of hardcoding them.
+    assert {member.value for member in api.SignAs} == {"auto", "pdf", "xml", "cades"}
