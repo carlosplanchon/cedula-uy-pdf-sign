@@ -16,13 +16,15 @@ canonicalize exactly like signing, so there is a single source of truth.
 """
 
 import base64
+import copy
+import hashlib
 import re
 from datetime import datetime, timezone
 from typing import Optional
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from lxml import etree
 
 from firmauy.cert_utils import name_fields, to_asn1_cert, to_asn1_certs
@@ -35,13 +37,114 @@ from firmauy.verify_common import (
     note_trusted_time,
 )
 from firmauy.xml_sign import (
+    ALG_ENVELOPED,
     SIGNED_PROPS_TYPE,
     _c14n,
     _compute_enveloped_digest,
     _ds,
+    _secure_parser,
     _sha256_b64,
     _xades,
 )
+
+
+# XML-DSig digest algorithm URIs -> hashlib constructor names.
+_DIGEST_ALGORITHMS = {
+    "http://www.w3.org/2001/04/xmlenc#sha256": "sha256",
+    "http://www.w3.org/2000/09/xmldsig#sha1": "sha1",
+    "http://www.w3.org/2001/04/xmldsig-more#sha384": "sha384",
+    "http://www.w3.org/2001/04/xmlenc#sha512": "sha512",
+}
+
+
+def _digest_b64(algorithm_uri: str, data: bytes) -> str:
+    """Base64 digest of `data` using the XML-DSig algorithm URI, or raise ValueError."""
+    hash_name = _DIGEST_ALGORITHMS.get(algorithm_uri)
+    if hash_name is None:
+        raise ValueError(f"unsupported digest algorithm: {algorithm_uri}")
+    return base64.b64encode(hashlib.new(hash_name, data).digest()).decode()
+
+
+def _verify_reference(ref, root, sig) -> tuple[str, bool, str]:
+    """Validate a single <ds:Reference>.
+
+    Returns ``(check_name, ok, detail)``. The two XAdES-BES references keep their
+    historical check names; any additional references are reported under a
+    descriptive name so a signature cannot claim coverage it does not check.
+    """
+    uri = ref.get("URI") or ""
+    ref_type = ref.get("Type")
+    digest_method = ref.find(_ds("DigestMethod"))
+    digest_value = ref.find(_ds("DigestValue"))
+
+    if ref_type == SIGNED_PROPS_TYPE:
+        check_name = "signed-properties digest"
+    elif uri == "" and ref_type is None:
+        check_name = "document digest (reference)"
+    else:
+        check_name = f"reference digest (URI={uri!r})"
+
+    if digest_method is None or digest_value is None:
+        if ref_type == SIGNED_PROPS_TYPE:
+            detail = "missing SignedProperties reference"
+        elif uri == "" and ref_type is None:
+            detail = "reference has no DigestValue"
+        else:
+            detail = "Reference missing DigestMethod or DigestValue"
+        return check_name, False, detail
+
+    algorithm = digest_method.get("Algorithm")
+    if algorithm is None:
+        return check_name, False, "DigestMethod missing Algorithm"
+
+    transforms = ref.find(_ds("Transforms"))
+    if transforms is not None and uri == "" and ref_type is None:
+        # The enveloped document reference is allowed the enveloped transform;
+        # anything else in the transforms block is unsupported for now.
+        allowed = {ALG_ENVELOPED}
+        for tr in transforms.findall(_ds("Transform")):
+            if tr.get("Algorithm") not in allowed:
+                return check_name, False, "unsupported transform on reference"
+    elif transforms is not None:
+        return check_name, False, "unsupported transform on reference"
+
+    try:
+        if uri == "" and ref_type is None:
+            # Reproduce the exact stripping logic from xml_sign._compute_enveloped_digest
+            # so the same document digest is verified here.
+            root_copy = copy.deepcopy(root)
+            for s in root_copy.findall(_ds("Signature")):
+                root_copy.remove(s)
+            source_bytes = _c14n(root_copy)
+        elif ref_type == SIGNED_PROPS_TYPE:
+            sp = sig.find(
+                f"{_ds('Object')}/{_xades('QualifyingProperties')}/{_xades('SignedProperties')}"
+            )
+            if sp is None:
+                return check_name, False, "SignedProperties not found"
+            source_bytes = _c14n(sp)
+        elif uri.startswith("#"):
+            # Same-document reference: locate the element by its Id attribute.
+            target_id = uri[1:]
+            target = next(
+                (el for el in root.iter() if el.get("Id") == target_id), None
+            )
+            if target is None:
+                return check_name, False, f"referenced element #{target_id} not found"
+            source_bytes = _c14n(target)
+        else:
+            return check_name, False, f"unsupported reference URI scheme: {uri!r}"
+
+        got = _digest_b64(algorithm, source_bytes)
+    except ValueError as exc:
+        return check_name, False, str(exc)
+    except Exception as exc:
+        return check_name, False, f"digest error: {str(exc)[:80]}"
+
+    stated = (digest_value.text or "").strip()
+    if got != stated:
+        return check_name, False, "digest mismatch"
+    return check_name, True, ""
 
 
 def _leaf_cert(sig) -> tuple:
@@ -163,7 +266,7 @@ def verify_xml(
     integrity (level 1). With `tsa_trust_roots` (from --tsa-ca) a XAdES-T timestamp's TSA is
     validated; on success the signing certificate is evaluated at the trusted genTime instead of now
     (validation at the sealed time, not the AdES -LT/-LTA levels)."""
-    root = etree.fromstring(xml_bytes)
+    root = etree.fromstring(xml_bytes, parser=_secure_parser())
     sigs = root.findall(_ds("Signature"))
     if not sigs:
         return [VerifyResult("INVALID", [Check("signature present", False, "no <ds:Signature>")])]
@@ -229,14 +332,33 @@ def _verify_signature(
     else:
         checks.append(Check("signed-properties digest", False, "missing SignedProperties reference"))
 
-    # 3. SignedInfo signature (RSA-SHA256). The b64decode is inside the try so a malformed
-    # SignatureValue is a failed check (INVALID), not an uncaught exception.
-    try:
-        sigval = base64.b64decode(re.sub(r"\s+", "", sv_el.text))
-        cert.public_key().verify(sigval, _c14n(si), padding.PKCS1v15(), hashes.SHA256())
-        checks.append(Check("SignedInfo signature (RSA-SHA256)", True))
-    except Exception as exc:
-        checks.append(Check("SignedInfo signature (RSA-SHA256)", False, str(exc)[:80]))
+    # 3. Any additional Reference elements in SignedInfo must also validate. XML-DSig semantics
+    # require every reference to match; silently ignoring extras would let a signature claim
+    # coverage it does not actually check.
+    for ref in refs:
+        if ref is ref_doc or ref is ref_props:
+            continue
+        name, ok, detail = _verify_reference(ref, root, sig)
+        checks.append(Check(name, ok, detail))
+
+    # 3. SignedInfo signature. RSA-SHA256 is what Uruguayan cédula cards issue today; the
+    # key-type check is future-proofing so a valid XML-DSig signature with another algorithm
+    # returns INVALID instead of crashing the verifier.
+    public_key = cert.public_key()
+    if isinstance(public_key, rsa.RSAPublicKey):
+        try:
+            sigval = base64.b64decode(re.sub(r"\s+", "", sv_el.text))
+            public_key.verify(sigval, _c14n(si), padding.PKCS1v15(), hashes.SHA256())
+            checks.append(Check("SignedInfo signature (RSA-SHA256)", True))
+        except Exception as exc:
+            checks.append(Check("SignedInfo signature (RSA-SHA256)", False, str(exc)[:80]))
+    else:
+        key_type = type(public_key).__name__
+        checks.append(Check(
+            "SignedInfo signature",
+            False,
+            f"unsupported signing key type: {key_type} (Uruguayan IDs use RSA)",
+        ))
 
     # 4. XAdES SigningCertificate binding (CertDigest == sha256(cert)). Required by XAdES-BES, so a
     # missing binding is a failed check, not silently skipped: without it the signed properties do

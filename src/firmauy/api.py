@@ -317,6 +317,11 @@ def verify(
         _resolve_tsa_anchors,
     )
 
+    if check_revocation and no_trust:
+        raise RuntimeError(
+            "check_revocation requires the certificate chain; no_trust must be False."
+        )
+
     path = Path(path)
     kind = _detect_signature_kind(path)
     roots, intermediates = _resolve_trust_anchors(Path(ca_file) if ca_file else None, no_trust)

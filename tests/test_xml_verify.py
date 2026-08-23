@@ -191,3 +191,108 @@ def test_one_broken_signature_is_reported_alongside_the_valid_one():
     results = verify_xml(etree.tostring(root), trust_roots=None)
     assert len(results) == 2
     assert sorted(r.indication for r in results) == ["INDETERMINATE", "INVALID"]
+
+
+# --- parser hardening -------------------------------------------------------------
+
+def test_external_entity_in_input_does_not_read_local_files(tmp_path):
+    # A malicious XML with an external entity must not be resolved, even if parser defaults change.
+    payload = tmp_path / "secret.txt"
+    payload.write_text("TOPSECRET")
+    xml = (
+        f"<!DOCTYPE root [<!ENTITY xxe SYSTEM 'file://{payload}'>]>"
+        f"<root {DS}>&xxe;</root>"
+    ).encode()
+    result = verify_xml(xml, trust_roots=None)[0]
+    assert result.indication == "INVALID"
+    assert "TOPSECRET" not in str(result.checks)
+
+
+# --- key algorithm future-proofing ------------------------------------------------
+
+def test_non_rsa_signing_key_returns_invalid_not_crash():
+    # Uruguayan cédula cards issue RSA keys, but the verifier accepts arbitrary XAdES documents
+    # and must not crash on an ECDSA certificate.
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    now = datetime.datetime.now(datetime.timezone.utc)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "EC Test")])
+    cert = (
+        x509.CertificateBuilder().subject_name(name).issuer_name(name)
+        .public_key(key.public_key()).serial_number(1)
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=365)).sign(key, hashes.SHA256())
+    )
+    b64 = _cert_b64(cert)
+    xml = (
+        f"<root {DS}><ds:Signature><ds:SignedInfo>"
+        f"<ds:Reference URI=''><ds:DigestMethod Algorithm='{SHA256}'/>"
+        f"<ds:DigestValue>AAAA</ds:DigestValue></ds:Reference>"
+        f"</ds:SignedInfo><ds:SignatureValue>QUJD</ds:SignatureValue>"
+        f"<ds:KeyInfo><ds:X509Data><ds:X509Certificate>{b64}</ds:X509Certificate>"
+        f"</ds:X509Data></ds:KeyInfo></ds:Signature></root>"
+    ).encode()
+    result = _invalid(xml)
+    sig_check = next((c for c in result.checks if "SignedInfo signature" in c.name), None)
+    assert sig_check is not None and not sig_check.ok
+    assert "unsupported signing key type" in sig_check.detail
+
+
+# --- every Reference in SignedInfo must be validated ------------------------------
+
+def test_extra_reference_with_bad_digest_is_invalid(cert_valid):
+    # An extra <ds:Reference> that does not match must be reported, not silently ignored.
+    b64 = _cert_b64(cert_valid)
+    xml = (
+        f"<root {DS}><ds:Signature><ds:SignedInfo>"
+        f"<ds:Reference URI=''><ds:DigestMethod Algorithm='{SHA256}'/>"
+        f"<ds:DigestValue>AAAA</ds:DigestValue></ds:Reference>"
+        f"<ds:Reference URI='#missing' Type='http://example.com/other'>"
+        f"<ds:DigestMethod Algorithm='{SHA256}'/>"
+        f"<ds:DigestValue>AAAA</ds:DigestValue></ds:Reference>"
+        f"</ds:SignedInfo><ds:SignatureValue>QUJD</ds:SignatureValue>"
+        f"<ds:KeyInfo><ds:X509Data><ds:X509Certificate>{b64}</ds:X509Certificate>"
+        f"</ds:X509Data></ds:KeyInfo></ds:Signature></root>"
+    ).encode()
+    result = _invalid(xml)
+    extra = next((c for c in result.checks if "reference digest" in c.name and "URI=" in c.name), None)
+    assert extra is not None and not extra.ok
+
+
+def test_extra_reference_to_existing_element_is_validated(cert_valid):
+    # An additional same-document reference that does match must be reported as passing.
+    import hashlib
+
+    from lxml import etree
+
+    from firmauy.xml_sign import _c14n
+
+    b64 = _cert_b64(cert_valid)
+    extra_id = "extra-el"
+    extra_xml = f"<extra Id='{extra_id}'>data</extra>"
+    xml = (
+        f"<root {DS}><ds:Signature><ds:SignedInfo>"
+        f"<ds:Reference URI=''><ds:DigestMethod Algorithm='{SHA256}'/>"
+        f"<ds:DigestValue>AAAA</ds:DigestValue></ds:Reference>"
+        f"<ds:Reference URI='#{extra_id}'>"
+        f"<ds:DigestMethod Algorithm='{SHA256}'/>"
+        f"<ds:DigestValue>PLACEHOLDER</ds:DigestValue></ds:Reference>"
+        f"</ds:SignedInfo><ds:SignatureValue>QUJD</ds:SignatureValue>"
+        f"<ds:KeyInfo><ds:X509Data><ds:X509Certificate>{b64}</ds:X509Certificate>"
+        f"</ds:X509Data></ds:KeyInfo></ds:Signature>{extra_xml}</root>"
+    ).encode()
+    # Compute the canonical digest of the extra element in its document context.
+    root = etree.fromstring(xml)
+    target = next(el for el in root.iter() if el.get("Id") == extra_id)
+    extra_digest = base64.b64encode(hashlib.sha256(_c14n(target)).digest()).decode()
+    xml = xml.replace(b"PLACEHOLDER", extra_digest.encode())
+
+    result = verify_xml(xml, trust_roots=None)[0]
+    extra = next((c for c in result.checks if f"URI='#{extra_id}'" in c.name), None)
+    assert extra is not None and extra.ok

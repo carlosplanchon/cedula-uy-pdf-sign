@@ -34,8 +34,12 @@ def get_pin(source: PinSource, env_var: Optional[str], fd: Optional[int]) -> str
             raise RuntimeError(f"Environment variable '{env_var}' is not defined or empty.")
         pin = val
     elif source == PinSource.stdin:
-        typer.echo("Reading PIN from stdin...", err=True)
-        pin = sys.stdin.readline().rstrip("\r\n")
+        if sys.stdin.isatty():
+            # A TTY echoes keystrokes; use getpass so the PIN stays off screen.
+            pin = getpass.getpass("Cédula PIN: ")
+        else:
+            typer.echo("Reading PIN from stdin...", err=True)
+            pin = sys.stdin.readline().rstrip("\r\n")
     elif source == PinSource.fd:
         if fd is None:
             raise typer.BadParameter("--pin-source fd requires --pin-fd")

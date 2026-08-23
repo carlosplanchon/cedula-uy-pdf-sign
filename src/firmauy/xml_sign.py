@@ -22,6 +22,23 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 from lxml import etree
 
+
+def _secure_parser() -> etree.XMLParser:
+    """Parser hardening for untrusted XML documents.
+
+    lxml currently disables external entities by default, but relying on vendor
+    defaults is a defense-in-depth gap. Explicitly forbid DTD loading, network
+    access and entity resolution so a malicious XML cannot read local files,
+    issue outbound requests, or expand a billion-laughs entity bomb.
+    """
+    return etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        load_dtd=False,
+        huge_tree=False,
+    )
+
+
 # Namespaces
 DSIG = "http://www.w3.org/2000/09/xmldsig#"
 XADES = "http://uri.etsi.org/01903/v1.3.2#"
@@ -194,7 +211,7 @@ def sign_xml(
     SignatureValue, upgrading the result from XAdES-BES to XAdES-T.
     Returns the signed XML as UTF-8 bytes.
     """
-    root = etree.fromstring(xml_bytes)
+    root = etree.fromstring(xml_bytes, parser=_secure_parser())
     p = _build_signature(root, cert, signing_time)
 
     # Phase 1: reference digests.

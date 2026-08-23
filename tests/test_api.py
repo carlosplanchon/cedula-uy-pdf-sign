@@ -17,6 +17,7 @@ from firmauy.api import (
     sign_files,
     sign_xml,
     validate_ci,
+    verify,
 )
 
 
@@ -223,6 +224,14 @@ def test_the_image_mode_type_is_reachable_from_the_public_api():
 
     assert api.ImageMode is ImageMode
     assert {member.value for member in api.ImageMode} == {"background", "side", "only"}
+
+
+def test_verify_rejects_no_trust_with_check_revocation(tmp_path):
+    # The CLI refuses --check-revocation together with --no-trust; the public API must do the same.
+    p = tmp_path / "x.pdf"
+    p.write_bytes(b"%PDF-1.7\n%%EOF\n")
+    with pytest.raises(RuntimeError, match="check_revocation requires the certificate chain"):
+        verify(p, no_trust=True, check_revocation=True)
 
 
 def test_the_default_appearance_is_exactly_what_was_hardcoded_before_it_existed():
