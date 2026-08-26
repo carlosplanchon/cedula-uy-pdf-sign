@@ -60,7 +60,7 @@ from firmauy.national_ca import (
 )
 from firmauy.pdf_verify import verify_pdf
 from firmauy.xml_verify import verify_xml
-from firmauy.cms_verify import verify_cms
+from firmauy.cms_verify import MAX_CMS_BYTES, verify_cms
 from firmauy.errors import OutputCommittedError
 from firmauy._shared import (
     _INDICATION_RANK,
@@ -70,6 +70,7 @@ from firmauy._shared import (
     _format_error,
     _resolve_trust_anchors,
     _resolve_tsa_anchors,
+    read_bounded,
 )
 from firmauy.signing import (
     _build_timestamper,
@@ -1982,7 +1983,7 @@ def verify_any_cmd(
         with input_file.open("rb") as data:
             result = verify_cms(
                 data,
-                p7s_file.read_bytes(),
+                read_bounded(p7s_file, MAX_CMS_BYTES, "CMS signature"),
                 trust_roots=roots,
                 intermediates=intermediates,
                 check_revocation=check_revocation,
@@ -2083,7 +2084,7 @@ def verify_cmd(
                                  tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)
         else:  # cms / detached .p7s
             with orig.open("rb") as data:
-                results = [verify_cms(data, input_file.read_bytes(), trust_roots=roots,
+                results = [verify_cms(data, read_bounded(input_file, MAX_CMS_BYTES, "CMS signature"), trust_roots=roots,
                                       intermediates=intermediates,
                                       check_revocation=check_revocation,
                                       tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)]

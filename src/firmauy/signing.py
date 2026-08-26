@@ -1279,7 +1279,10 @@ def _verify_after_cms(input_file: Path, output_p7s: Path) -> None:
     """
     with _post_sign(output_p7s):
         with input_file.open("rb") as data:
-            _check_post_sign(verify_cms(data, output_p7s.read_bytes(), trust_roots=None),
+            from firmauy.cms_verify import MAX_CMS_BYTES
+            from firmauy._shared import read_bounded
+            _check_post_sign(verify_cms(data, read_bounded(output_p7s, MAX_CMS_BYTES, "CMS signature"),
+                                        trust_roots=None),
                              output_p7s, covers=input_file)
 
 
