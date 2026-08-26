@@ -45,6 +45,15 @@ _INDICATION_RANK = {"VALID": 0, "INDETERMINATE": 1, "INVALID": 2}
 _CMS_DETECT_MAX_BYTES = 8 * 1024 * 1024
 
 
+def read_bounded(path: Path, max_bytes: int, what: str) -> bytes:
+    """Read a file up to ``max_bytes`` without allocating an unbounded input buffer."""
+    with path.open("rb") as f:
+        data = f.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"{what} exceeds the {max_bytes} byte limit; refusing to read it")
+    return data
+
+
 def _resolve_trust_anchors(ca_file: Optional[Path], no_trust: bool,
                            notify: Optional[Callable[[str], None]] = None):
     """Return (roots, intermediates): from --ca-file, else the cached national CAs, else the

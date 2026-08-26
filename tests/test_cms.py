@@ -18,7 +18,7 @@ from pyhanko.sign.signers import SimpleSigner
 from pyhanko_certvalidator.registry import SimpleCertificateStore
 
 from firmauy.cms_sign import sign_cms_detached
-from firmauy.cms_verify import verify_cms
+from firmauy.cms_verify import MAX_CMS_BYTES, _load_signed_data, verify_cms
 
 
 def _key_and_cert() -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
@@ -99,3 +99,8 @@ def test_verify_cms_integrity_trust_and_tamper():
 def test_verify_cms_rejects_non_cms_input():
     with pytest.raises(ValueError):
         verify_cms(b"data", b"this is not a CMS structure at all")
+
+
+def test_verify_cms_rejects_oversized_signature_before_parsing():
+    with pytest.raises(ValueError, match="exceeds the .* byte limit"):
+        _load_signed_data(b"x" * (MAX_CMS_BYTES + 1))

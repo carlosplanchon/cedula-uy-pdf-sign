@@ -30,6 +30,8 @@ from firmauy.verify_common import (
     timestamp_of,
 )
 
+MAX_PDF_BYTES = 128 * 1024 * 1024
+
 
 
 def _map_status(status, trust_evaluated: bool, info=None, ts_check=None) -> VerifyResult:
@@ -129,6 +131,9 @@ def verify_pdf(
     trusted genTime rather than now, so a signature does not stop verifying the day the signer's
     certificate expires. That is the whole purpose of a timestamp, and until 1.13.0 only the XAdES
     verifier honoured it."""
+    pdf_path = Path(pdf_path)
+    if pdf_path.stat().st_size > MAX_PDF_BYTES:
+        raise ValueError(f"PDF exceeds the {MAX_PDF_BYTES} byte limit; refusing to parse it")
     at = at_time or datetime.now(timezone.utc)
 
     def signer_context(moment):
@@ -144,7 +149,7 @@ def verify_pdf(
         )
 
     results = []
-    with open(Path(pdf_path), "rb") as f:
+    with open(pdf_path, "rb") as f:
         reader = PdfFileReader(f)
         hybrid = reader.xrefs.hybrid_xrefs_present
         if hybrid:
