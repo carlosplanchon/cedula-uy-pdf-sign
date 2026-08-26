@@ -334,7 +334,7 @@ def list_tokens(
             typer.echo(f"{label:<32}  {manufacturer:<20}  {model:<16}  {serial}")
 
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -440,7 +440,7 @@ def list_certs(
             )
 
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -594,7 +594,7 @@ def sign_pdf(
                 typer.secho("Verified: signature intact and covers the whole file.", fg=typer.colors.GREEN)
 
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -814,7 +814,7 @@ def sign_pdf_batch(
     except typer.Exit:
         raise
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -914,7 +914,7 @@ def sign_xml_cmd(
                 typer.secho("Verified: signature intact.", fg=typer.colors.GREEN)
 
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -1064,7 +1064,7 @@ def sign_xml_batch(
     except typer.Exit:
         raise
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -1150,7 +1150,7 @@ def sign_any(
                 typer.secho("Verified: signature intact.", fg=typer.colors.GREEN)
 
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -1306,7 +1306,7 @@ def sign_any_batch(
     except typer.Exit:
         raise
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -1486,7 +1486,7 @@ def sign_cmd(
                 typer.secho("Verified: signature intact.", fg=typer.colors.GREEN)
 
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
