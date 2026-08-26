@@ -748,6 +748,9 @@ def sign_files(
     # stamp, and building it here means a bad image path fails before the card is touched instead
     # of part-way through, with some files already signed.
     stamp = (appearance or _DEFAULT_APPEARANCE)._pdf_kwargs()
+    if appearance is not None and appearance.image is not None:
+        from firmauy.appearance import validate_image
+        validate_image(appearance.image)
 
     items = [Path(p) for p in paths]
     if not items:
