@@ -271,3 +271,38 @@ def test_a_url_that_is_not_http_is_refused_here(monkeypatch):
 def test_a_url_without_a_host_is_refused():
     with pytest.raises(ValueError, match="no host"):
         _b(tsa_url="https:///sinhost")
+
+
+def test_oversized_tsa_response_is_rejected_before_asn1_parsing():
+    import asyncio
+    import http.server
+
+    from asn1crypto import tsp
+    from firmauy.signing import _NoRedirectTimeStamper
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/timestamp-reply")
+            self.send_header(
+                "Content-Length", str(_NoRedirectTimeStamper._MAX_RESPONSE_BYTES + 1)
+            )
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    srv = _tsa_server(Handler)
+    try:
+        stamper = _NoRedirectTimeStamper(f"http://127.0.0.1:{srv.server_port}/tsr")
+        req = tsp.TimeStampReq({
+            "version": 1,
+            "message_imprint": tsp.MessageImprint({
+                "hash_algorithm": {"algorithm": "sha256"},
+                "hashed_message": b"\x00" * 32,
+            }),
+        })
+        with pytest.raises(Exception, match="exceeds the .* byte limit"):
+            asyncio.run(stamper.async_request_tsa_response(req))
+    finally:
+        srv.shutdown()
