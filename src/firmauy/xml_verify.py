@@ -35,6 +35,10 @@ from firmauy.verify_common import (
     note_trusted_time,
 )
 from firmauy.xml_sign import (
+    ALG_C14N,
+    ALG_ENVELOPED,
+    ALG_RSA_SHA256,
+    ALG_SHA256,
     SIGNED_PROPS_TYPE,
     _c14n,
     _compute_enveloped_digest,
@@ -199,6 +203,42 @@ def _verify_signature(
         missing = "SignedInfo" if si is None else "SignatureValue"
         return VerifyResult("INVALID", [Check("signature structure", False, f"malformed: no <ds:{missing}>")])
     refs = si.findall(_ds("Reference"))
+    c14n_method = si.find(_ds("CanonicalizationMethod"))
+    signature_method = si.find(_ds("SignatureMethod"))
+    checks.append(Check(
+        "canonicalization algorithm (C14N 1.0)",
+        c14n_method is not None and c14n_method.get("Algorithm") == ALG_C14N,
+        "unsupported or missing CanonicalizationMethod" if (
+            c14n_method is None or c14n_method.get("Algorithm") != ALG_C14N
+        ) else "",
+    ))
+    checks.append(Check(
+        "signature algorithm (RSA-SHA256)",
+        signature_method is not None and signature_method.get("Algorithm") == ALG_RSA_SHA256,
+        "unsupported or missing SignatureMethod" if (
+            signature_method is None or signature_method.get("Algorithm") != ALG_RSA_SHA256
+        ) else "",
+    ))
+    for ref in refs:
+        digest_method = ref.find(_ds("DigestMethod"))
+        checks.append(Check(
+            "reference digest algorithm (SHA-256)",
+            digest_method is not None and digest_method.get("Algorithm") == ALG_SHA256,
+            "unsupported or missing DigestMethod" if (
+                digest_method is None or digest_method.get("Algorithm") != ALG_SHA256
+            ) else "",
+        ))
+        transforms = ref.find(_ds("Transforms"))
+        if transforms is not None:
+            transform_algorithms = [
+                transform.get("Algorithm") for transform in transforms.findall(_ds("Transform"))
+            ]
+            allowed = [ALG_ENVELOPED] if (ref.get("URI") or "") == "" else []
+            checks.append(Check(
+                "reference transforms",
+                transform_algorithms == allowed,
+                "unsupported reference transform",
+            ))
     try:
         cert, cert_der = _leaf_cert(sig)
     except ValueError as exc:
@@ -242,12 +282,13 @@ def _verify_signature(
     # missing binding is a failed check, not silently skipped: without it the signed properties do
     # not commit to *which* certificate signed, weakening the cert-to-signature binding.
     cd = sig.find(f".//{_xades('CertDigest')}/{_ds('DigestValue')}")
-    if cd is not None:
+    cd_method = sig.find(f".//{_xades('CertDigest')}/{_ds('DigestMethod')}")
+    if cd is not None and cd_method is not None and cd_method.get("Algorithm") == ALG_SHA256:
         ok = (cd.text or "").strip() == _sha256_b64(cert_der)
         checks.append(Check("SigningCertificate binding", ok))
     else:
         checks.append(Check("SigningCertificate binding", False,
-                            "missing (no XAdES SigningCertificate)"))
+                            "missing or unsupported certificate digest (SHA-256 required)"))
 
     # Core integrity (the checks above) decides INVALID. The XAdES-T timestamp is an *unsigned*
     # property, so a problem with it must never make the core signature INVALID nor block chain

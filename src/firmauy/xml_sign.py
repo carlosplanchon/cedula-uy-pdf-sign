@@ -22,6 +22,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 from lxml import etree
 
+MAX_XML_BYTES = 16 * 1024 * 1024
+
 # Namespaces
 DSIG = "http://www.w3.org/2000/09/xmldsig#"
 XADES = "http://uri.etsi.org/01903/v1.3.2#"
@@ -194,6 +196,8 @@ def sign_xml(
     SignatureValue, upgrading the result from XAdES-BES to XAdES-T.
     Returns the signed XML as UTF-8 bytes.
     """
+    if len(xml_bytes) > MAX_XML_BYTES:
+        raise ValueError(f"XML input exceeds the {MAX_XML_BYTES} byte limit; refusing to parse it")
     root = etree.fromstring(xml_bytes)
     p = _build_signature(root, cert, signing_time)
 
