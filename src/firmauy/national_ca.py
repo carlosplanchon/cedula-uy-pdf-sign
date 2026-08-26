@@ -21,6 +21,7 @@ import hashlib
 import importlib.resources
 import os
 import random
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -69,6 +70,22 @@ def _load_cert(data: bytes) -> x509.Certificate:
 
 def _fingerprint(cert: x509.Certificate) -> str:
     return hashlib.sha256(cert.public_bytes(Encoding.DER)).hexdigest()
+
+
+def _atomic_cache_write(path: Path, data: bytes) -> None:
+    """Write a cache file privately, then replace the destination without following a symlink."""
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_path, path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def _certs_from_files(paths: Optional[list]) -> dict:
@@ -276,8 +293,8 @@ def fetch_cas(
     d.mkdir(parents=True, exist_ok=True)
     acrn_path = d / "acrn.pem"
     mica_path = d / "mica.pem"
-    acrn_path.write_bytes(acrn.public_bytes(Encoding.PEM))
-    mica_path.write_bytes(mica.public_bytes(Encoding.PEM))
+    _atomic_cache_write(acrn_path, acrn.public_bytes(Encoding.PEM))
+    _atomic_cache_write(mica_path, mica.public_bytes(Encoding.PEM))
     return acrn_path, mica_path
 
 

@@ -251,6 +251,19 @@ def test_fetch_cas_from_files_uses_supplied_certs_without_network(tmp_path, monk
     assert national_ca._fingerprint(cached_mica) == national_ca._fingerprint(intermediate)
 
 
+def test_atomic_cache_write_replaces_symlink_not_target(tmp_path):
+    target = tmp_path / "target"
+    target.write_bytes(b"unchanged")
+    destination = tmp_path / "acrn.pem"
+    destination.symlink_to(target)
+
+    national_ca._atomic_cache_write(destination, b"new certificate")
+
+    assert target.read_bytes() == b"unchanged"
+    assert destination.read_bytes() == b"new certificate"
+    assert not destination.is_symlink()
+
+
 # --- bundled trust anchors --------------------------------------------------
 
 def test_bundled_trust_anchors_match_pins():
