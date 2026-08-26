@@ -169,7 +169,38 @@ def test_emit_verify_error_json(capsys):
     _emit_verify_error(ValueError("boom"), json_output=True)
     out = json.loads(capsys.readouterr().out)
     assert out["schema_version"] == 2
+    assert out["error_code"] == "operation_failed"
     assert out["error"] == "boom"
+
+
+def test_sign_dry_run_does_not_open_the_card(tmp_path):
+    source = tmp_path / "input.pdf"
+    source.write_bytes(b"%PDF-1.7\n%%EOF\n")
+    output = tmp_path / "signed.pdf"
+
+    result = runner.invoke(app, ["sign-pdf", str(source), str(output), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "Dry run:" in result.output
+    assert "No card or PIN used" in result.output
+    assert not output.exists()
+
+
+def test_batch_dry_run_reports_all_files_without_creating_output_dir(tmp_path):
+    source_dir = tmp_path / "inputs"
+    source_dir.mkdir()
+    (source_dir / "one.xml").write_text("<root/>")
+    (source_dir / "two.xml").write_text("<root/>")
+    output_dir = tmp_path / "outputs"
+
+    result = runner.invoke(app, [
+        "sign-xml-batch", "--input-dir", str(source_dir),
+        "--output-dir", str(output_dir), "--dry-run",
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert "Dry run: 2 file(s) ready" in result.output
+    assert not output_dir.exists()
 
 
 # --- --json verify, end-to-end through the CLI ------------------------------

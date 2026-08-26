@@ -162,6 +162,7 @@ OverwriteOpt = Annotated[bool, typer.Option("--overwrite", help="Allow overwriti
 ForceOpt = Annotated[bool, typer.Option("--force", help="Continue even if the signature field already contains a signature (the resulting PDF may become invalid).")]
 QuietOpt = Annotated[bool, typer.Option("--quiet", "-q", help="Do not print the signer identity block (name, issuer, certificate serial, PKCS#11 ID). Use in batch/automation to keep identifying data out of logs.")]
 VerifyOpt = Annotated[bool, typer.Option("--verify", help="After signing, re-verify the produced signature (integrity and coverage, no trust); the command fails if it is not intact.")]
+DryRunOpt = Annotated[bool, typer.Option("--dry-run", help="Run preflight checks without opening the card or asking for the PIN.")]
 ImageOpt = Annotated[Optional[Path], typer.Option("--image", exists=True, dir_okay=False, readable=True, help="Image (PNG/JPEG) to show in the signature appearance. Cosmetic only; does not affect the signature.")]
 ImageModeOpt = Annotated[ImageMode, typer.Option("--image-mode", help="Where the --image goes: background (behind the text, default), side (left of the text), or only (image, no text).")]
 ImageOpacityOpt = Annotated[float, typer.Option("--image-opacity", min=0.0, max=1.0, help="Opacity of the --image in background mode (0..1). Default 0.2 (subtle watermark).")]
@@ -186,6 +187,29 @@ def _warn(msg: str) -> None:
     """Print a warning/note line to stderr. This is the ``notify`` sink the signing engine calls,
     so its warnings surface on the terminal; the public API passes no sink and stays silent."""
     typer.secho(msg, fg=typer.colors.YELLOW, err=True)
+
+
+def _dry_run(outputs: Iterable[Path]) -> None:
+    """Report a successful preflight without touching the card or output files."""
+    typer.echo(f"Dry run: {len(list(outputs))} file(s) ready. No card or PIN used.")
+
+
+def _error_code(exc: Exception) -> str:
+    """Return a stable machine-readable code for a CLI error."""
+    codes = {
+        "BadParameter": "invalid_argument",
+        "FileNotFoundError": "file_not_found",
+        "OutputExistsError": "output_exists",
+        "OutputCommittedError": "output_committed",
+        "PostSignVerificationError": "post_sign_verification_failed",
+        "IncorrectPinError": "incorrect_pin",
+        "PinLockedError": "pin_locked",
+        "PinError": "pin_error",
+        "CertificateNotFoundError": "certificate_not_found",
+        "CertificateNotValidError": "certificate_not_valid",
+        "SigningKeyNotFoundError": "signing_key_not_found",
+    }
+    return codes.get(type(exc).__name__, "operation_failed")
 
 
 def _print_signing_info(ctx, *, tsa_url: Optional[str], quiet: bool = False) -> None:
@@ -446,6 +470,7 @@ def sign_pdf(
     force: ForceOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
     image: ImageOpt = None,
     image_mode: ImageModeOpt = ImageMode.background,
     image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
@@ -493,6 +518,9 @@ def sign_pdf(
             raise typer.BadParameter(
                 "Coordinates must satisfy x1 < x2 and y1 < y2."
             )
+        if dry_run:
+            _dry_run([output_pdf])
+            return
 
         box_width = x2 - x1
         box_height = y2 - y1
@@ -603,6 +631,7 @@ def sign_pdf_batch(
     force: ForceOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
     image: ImageOpt = None,
     image_mode: ImageModeOpt = ImageMode.background,
     image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
@@ -656,6 +685,10 @@ def sign_pdf_batch(
                 err=True,
             )
             raise typer.Exit(code=1)
+
+        if dry_run:
+            _dry_run(output for _, output in jobs)
+            return
 
         if x2 <= x1 or y2 <= y1:
             typer.secho(
@@ -809,6 +842,7 @@ def sign_xml_cmd(
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
 ) -> None:
     """Sign an XML document with a Uruguayan cédula (XAdES-BES, or XAdES-T with --tsa-url)."""
     if output_xml is None:
@@ -832,6 +866,10 @@ def sign_xml_cmd(
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env, tsa_header=tsa_header,
             tsa_header_env=tsa_header_env,
         )
+
+        if dry_run:
+            _dry_run([output_xml])
+            return
 
         with _signing_session(
             native=native, reader=reader,
@@ -896,6 +934,7 @@ def sign_xml_batch(
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
 ) -> None:
     """Sign multiple XML documents with a single PKCS#11 session (XAdES-BES, or XAdES-T with --tsa-url)."""
     try:
@@ -935,6 +974,9 @@ def sign_xml_batch(
             raise typer.Exit(code=1)
 
         _raise_on_output_collisions(jobs)
+        if dry_run:
+            _dry_run(output for _, output in jobs)
+            return
         output_dir.mkdir(parents=True, exist_ok=True)
 
         with _signing_session(
@@ -1026,6 +1068,7 @@ def sign_any(
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
 ) -> None:
     """Sign any file with a Uruguayan cédula, producing a detached CAdES-BES
     signature (.p7s, CMS/PKCS#7). The original file is left untouched."""
@@ -1054,6 +1097,10 @@ def sign_any(
                 f"Output file already exists: {output_p7s}\n"
                 "Use --overwrite to overwrite it."
             )
+
+        if dry_run:
+            _dry_run([output_p7s])
+            return
 
         with _signing_session(
             native=native, reader=reader,
@@ -1118,6 +1165,7 @@ def sign_any_batch(
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
 ) -> None:
     """Sign multiple files with a single PKCS#11 session (detached CAdES-BES .p7s).
 
@@ -1163,6 +1211,9 @@ def sign_any_batch(
             raise typer.Exit(code=1)
 
         _raise_on_output_collisions(jobs)
+        if dry_run:
+            _dry_run(output for _, output in jobs)
+            return
         output_dir.mkdir(parents=True, exist_ok=True)
 
         with _signing_session(
@@ -1294,6 +1345,7 @@ def sign_cmd(
     force: ForceOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
     image: ImageOpt = None,
     image_mode: ImageModeOpt = ImageMode.background,
     image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
@@ -1347,6 +1399,10 @@ def sign_cmd(
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header, tsa_header_env=tsa_header_env,
         )
+
+        if dry_run:
+            _dry_run([output])
+            return
 
         with _signing_session(
             native=native, reader=reader,
@@ -1451,6 +1507,7 @@ def sign_batch(
     force: ForceOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
     image: ImageOpt = None,
     image_mode: ImageModeOpt = ImageMode.background,
     image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
@@ -1523,6 +1580,9 @@ def sign_batch(
         # named by stem+suffix+ext, so same-stem inputs of different extensions that resolve to the
         # same kind collide (the CAdES <name>.p7s naming cannot).
         _raise_on_output_collisions((input_path, output) for input_path, _kind, output in jobs)
+        if dry_run:
+            _dry_run(output for _, _, output in jobs)
+            return
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1775,7 +1835,11 @@ def _emit_verify_error(exc: Exception, json_output: bool, pretty: bool = False) 
     """Report a hard error: a JSON ``{"error": ...}`` on stdout in --json mode (so stdout is
     always parseable), or a coloured message on stderr otherwise."""
     if json_output:
-        typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "error": _format_error(exc)}, pretty))
+        typer.echo(_json_dumps({
+            "schema_version": _JSON_SCHEMA_VERSION,
+            "error_code": _error_code(exc),
+            "error": _format_error(exc),
+        }, pretty))
     else:
         typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
 
