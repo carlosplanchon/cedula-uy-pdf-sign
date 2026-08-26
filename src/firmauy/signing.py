@@ -315,6 +315,8 @@ class _NoRedirectTimeStamper(HTTPTimeStamper):
     deliberately: the alternative is leaving the guarantee to a default we do not control.
     """
 
+    _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+
     async def async_request_tsa_response(self, req):
         from asyncio import to_thread
 
@@ -331,6 +333,7 @@ class _NoRedirectTimeStamper(HTTPTimeStamper):
                     auth=self.auth,
                     timeout=self.timeout,
                     allow_redirects=False,
+                    stream=True,
                 )
             except OSError as exc:
                 raise TimestampRequestError(
@@ -347,7 +350,28 @@ class _NoRedirectTimeStamper(HTTPTimeStamper):
                 raise TimestampRequestError(
                     "Timestamp server response is malformed.", raw_res
                 )
-            return tsp.TimeStampResp.load(raw_res.content)
+            content_length = raw_res.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    declared_length = int(content_length)
+                except ValueError:
+                    raise TimestampRequestError(
+                        "Timestamp server response has an invalid Content-Length."
+                    ) from None
+                if declared_length > self._MAX_RESPONSE_BYTES:
+                    raise TimestampRequestError(
+                        f"Timestamp server response exceeds the {self._MAX_RESPONSE_BYTES} byte "
+                        "limit; refusing to parse it."
+                    )
+            body = bytearray()
+            for chunk in raw_res.iter_content(chunk_size=64 * 1024):
+                body.extend(chunk)
+                if len(body) > self._MAX_RESPONSE_BYTES:
+                    raise TimestampRequestError(
+                        f"Timestamp server response exceeds the {self._MAX_RESPONSE_BYTES} byte "
+                        "limit; refusing to parse it."
+                    )
+            return tsp.TimeStampResp.load(bytes(body))
 
         return await to_thread(task)
 
