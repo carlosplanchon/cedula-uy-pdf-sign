@@ -5,8 +5,10 @@ a clean INVALID indication, never an uncaught internal exception (e.g. Attribute
 
 import base64
 
+import pytest
 from cryptography.hazmat.primitives.serialization import Encoding
 
+from firmauy.xml_sign import MAX_XML_BYTES
 from firmauy.xml_verify import verify_xml
 
 DS = "xmlns:ds='http://www.w3.org/2000/09/xmldsig#'"
@@ -31,6 +33,13 @@ def _cert_b64(cert) -> str:
 
 def test_no_signature_is_invalid():
     _invalid(b"<?xml version='1.0'?><root/>")
+
+
+def test_oversized_xml_is_rejected_before_parsing():
+    xml = b"<root>" + b"x" * MAX_XML_BYTES + b"</root>"
+
+    with pytest.raises(ValueError, match="exceeds the .* byte limit"):
+        verify_xml(xml, trust_roots=None)
 
 
 def test_signature_without_signedinfo_is_invalid_not_crash():
