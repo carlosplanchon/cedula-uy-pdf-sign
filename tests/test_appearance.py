@@ -96,6 +96,13 @@ class TestImageAppearance:
             make_appearance_pdf(str(tmp_path / "x.pdf"), signer="X", cert_serial="1", ts="t",
                                 issuer="i", image_path=str(bad), image_mode=ImageMode.only)
 
+    def test_large_dimensions_are_rejected_before_decode(self, tmp_path):
+        oversized = tmp_path / "large.png"
+        Image.new("RGB", (5000, 5000), (0, 0, 0)).save(oversized)
+        with pytest.raises(RuntimeError, match="safe decoding limit"):
+            make_appearance_pdf(str(tmp_path / "x.pdf"), signer="X", cert_serial="1", ts="t",
+                                issuer="i", image_path=str(oversized), image_mode=ImageMode.only)
+
     def test_faded_image_is_a_pale_watermark(self, sample_png):
         from PIL import ImageStat
 
