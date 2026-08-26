@@ -246,6 +246,34 @@ def test_a_redirect_is_refused_and_the_headers_never_arrive():
     assert "x-api-key" not in seen_at_destination, "the secret reached the redirect target"
 
 
+def test_oversized_tsa_response_is_rejected_and_closed(monkeypatch):
+    import asyncio
+    from unittest.mock import Mock
+
+    from asn1crypto import tsp
+    from firmauy.signing import _NoRedirectTimeStamper
+
+    response = Mock(
+        is_redirect=False,
+        is_permanent_redirect=False,
+        headers={"Content-Type": "application/timestamp-reply"},
+        iter_content=lambda chunk_size: [b"12345"],
+    )
+    monkeypatch.setattr(_NoRedirectTimeStamper, "_MAX_RESPONSE_BYTES", 4)
+    monkeypatch.setattr("requests.post", Mock(return_value=response))
+    request = tsp.TimeStampReq({
+        "version": 1,
+        "message_imprint": tsp.MessageImprint({
+            "hash_algorithm": {"algorithm": "sha256"},
+            "hashed_message": b"\x00" * 32,
+        }),
+    })
+
+    with pytest.raises(Exception, match="exceeds the 4 byte limit"):
+        asyncio.run(_NoRedirectTimeStamper("http://tsa.example/tsr").async_request_tsa_response(request))
+    response.close.assert_called_once_with()
+
+
 def test_the_builder_returns_a_timestamper_that_refuses_redirects():
     """A guard that lives in a subclass is only worth what the factory returns."""
     from firmauy.signing import _NoRedirectTimeStamper

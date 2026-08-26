@@ -75,7 +75,7 @@ from firmauy.pkcs11_utils import (
     select_certificate,
 )
 from firmauy.pdf_verify import verify_pdf
-from firmauy.xml_sign import sign_xml
+from firmauy.xml_sign import MAX_XML_BYTES, sign_xml
 from firmauy.xml_verify import verify_xml
 from firmauy.cms_sign import sign_cms_detached
 from firmauy.cms_verify import verify_cms
@@ -291,10 +291,40 @@ def _native_signing_session(*, reader, pin=None, pin_provider=None):
 # Retries on a name collision. With 64 random bits a collision is not a real event; the loop
 # is here so an exhausted namespace fails loudly instead of spinning.
 _STAGING_ATTEMPTS = 8
+MAX_PDF_BYTES = 128 * 1024 * 1024
 
 _SENSITIVE_HEADERS = frozenset({
     "authorization", "proxy-authorization", "x-api-key", "api-key", "x-auth-token", "x-auth",
 })
+
+
+@contextmanager
+def _open_regular_input(path: Path):
+    """Open a regular input without following a final symlink."""
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        mode = os.fstat(fd).st_mode
+        if not stat.S_ISREG(mode):
+            raise OSError(errno.EINVAL, f"Input is not a regular file: {path}")
+        with os.fdopen(fd, "rb") as stream:
+            fd = None
+            yield stream
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _read_input_bounded(path: Path, limit: int, label: str) -> bytes:
+    """Read a regular file while enforcing its maximum size."""
+    with _open_regular_input(path) as stream:
+        data = bytearray()
+        while True:
+            chunk = stream.read(min(1024 * 1024, limit + 1 - len(data)))
+            if not chunk:
+                return bytes(data)
+            data.extend(chunk)
+            if len(data) > limit:
+                raise ValueError(f"{label} exceeds the {limit} byte limit; refusing to parse it")
 
 
 class _NoRedirectTimeStamper(HTTPTimeStamper):
@@ -315,6 +345,8 @@ class _NoRedirectTimeStamper(HTTPTimeStamper):
     deliberately: the alternative is leaving the guarantee to a default we do not control.
     """
 
+    _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+
     async def async_request_tsa_response(self, req):
         from asyncio import to_thread
 
@@ -331,23 +363,42 @@ class _NoRedirectTimeStamper(HTTPTimeStamper):
                     auth=self.auth,
                     timeout=self.timeout,
                     allow_redirects=False,
+                    stream=True,
                 )
             except OSError as exc:
                 raise TimestampRequestError(
                     "Error in communication with timestamp server",
                 ) from exc
-            if raw_res.is_redirect or raw_res.is_permanent_redirect:
-                raise TimestampRequestError(
-                    f"The timestamp server answered {raw_res.status_code} (a redirect) instead of "
-                    "a timestamp. Refusing to follow it: a redirect can carry request headers, "
-                    "credentials among them, to a destination nobody asked for, and can downgrade "
-                    "to plain HTTP on the way. Point --tsa-url at the endpoint directly."
-                )
-            if raw_res.headers.get("Content-Type") != "application/timestamp-reply":
-                raise TimestampRequestError(
-                    "Timestamp server response is malformed.", raw_res
-                )
-            return tsp.TimeStampResp.load(raw_res.content)
+            try:
+                if raw_res.is_redirect or raw_res.is_permanent_redirect:
+                    raise TimestampRequestError(
+                        f"The timestamp server answered {raw_res.status_code} (a redirect) instead of "
+                        "a timestamp. Refusing to follow it."
+                    )
+                if raw_res.headers.get("Content-Type") != "application/timestamp-reply":
+                    raise TimestampRequestError("Timestamp server response is malformed.", raw_res)
+                content_length = raw_res.headers.get("Content-Length")
+                if content_length is not None:
+                    try:
+                        declared_length = int(content_length)
+                    except ValueError:
+                        raise TimestampRequestError(
+                            "Timestamp server response has an invalid Content-Length."
+                        ) from None
+                    if declared_length > self._MAX_RESPONSE_BYTES:
+                        raise TimestampRequestError(
+                            f"Timestamp server response exceeds the {self._MAX_RESPONSE_BYTES} byte limit."
+                        )
+                body = bytearray()
+                for chunk in raw_res.iter_content(chunk_size=64 * 1024):
+                    body.extend(chunk)
+                    if len(body) > self._MAX_RESPONSE_BYTES:
+                        raise TimestampRequestError(
+                            f"Timestamp server response exceeds the {self._MAX_RESPONSE_BYTES} byte limit."
+                        )
+                return tsp.TimeStampResp.load(bytes(body))
+            finally:
+                raw_res.close()
 
         return await to_thread(task)
 
@@ -1007,7 +1058,9 @@ def _sign_one_pdf(
 
     ensure_output_parent(output_pdf)
 
-    with input_pdf.open("rb") as inf:
+    with _open_regular_input(input_pdf) as inf:
+        if os.fstat(inf.fileno()).st_size > MAX_PDF_BYTES:
+            raise ValueError(f"PDF exceeds the {MAX_PDF_BYTES} byte limit; refusing to parse it")
         # Hybrid cross-reference PDFs (a classic xref table + an xref stream, common in files
         # exported by design tools) can't be incrementally signed in strict mode: pyHanko refuses
         # because the two xref structures could desync and the signature would not be equivalent
@@ -1148,7 +1201,7 @@ def _sign_one_xml(
         )
     ensure_output_parent(output_xml)
     signed = sign_xml(
-        input_xml.read_bytes(),
+        _read_input_bounded(input_xml, MAX_XML_BYTES, "XML"),
         cert=cert,
         signer=signer,
         signing_time=signing_time,

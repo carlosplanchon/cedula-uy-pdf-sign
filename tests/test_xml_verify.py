@@ -191,3 +191,39 @@ def test_one_broken_signature_is_reported_alongside_the_valid_one():
     results = verify_xml(etree.tostring(root), trust_roots=None)
     assert len(results) == 2
     assert sorted(r.indication for r in results) == ["INDETERMINATE", "INVALID"]
+
+
+def test_declared_non_sha256_algorithms_are_rejected():
+    from lxml import etree
+
+    from firmauy.xml_sign import _ds
+
+    root = etree.fromstring(_sign_with_cn(b"<root><data>x</data></root>", "ALGORITHM TEST"))
+    digest_method = root.find(f".//{_ds('Reference')}/{_ds('DigestMethod')}")
+    digest_method.set("Algorithm", "http://www.w3.org/2000/09/xmldsig#sha1")
+
+    result = verify_xml(etree.tostring(root), trust_roots=None)[0]
+
+    assert result.indication == "INVALID"
+    assert any(
+        c.name == "reference digest algorithm (SHA-256)" and not c.ok
+        for c in result.checks
+    )
+
+
+def test_declared_non_sha256_signature_algorithm_is_rejected():
+    from lxml import etree
+
+    from firmauy.xml_sign import _ds
+
+    root = etree.fromstring(_sign_with_cn(b"<root><data>x</data></root>", "ALGORITHM TEST"))
+    signature_method = root.find(f".//{_ds('SignatureMethod')}")
+    signature_method.set("Algorithm", "http://www.w3.org/2000/09/xmldsig#rsa-sha1")
+
+    result = verify_xml(etree.tostring(root), trust_roots=None)[0]
+
+    assert result.indication == "INVALID"
+    assert any(
+        c.name == "signature algorithm (RSA-SHA256)" and not c.ok
+        for c in result.checks
+    )
