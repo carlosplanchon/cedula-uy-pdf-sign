@@ -22,9 +22,28 @@ from firmauy.constants import (
 )
 
 _ALL_FIELDS = StampFields()
+MAX_IMAGE_FILE_BYTES = 16 * 1024 * 1024
+MAX_IMAGE_PIXELS = 20_000_000
+MAX_IMAGE_DECODED_BYTES = 80 * 1024 * 1024
 
 # What STAMP_TEXT_Y was measured against: title, signer, document, date, issuer.
 _FULL_TEXT_LINES = 5
+
+
+def validate_image(image_path) -> None:
+    """Validate image size and structure before any signing/card operation."""
+    from PIL import Image
+
+    image_path = Path(image_path)
+    if image_path.stat().st_size > MAX_IMAGE_FILE_BYTES:
+        raise ValueError(
+            f"image exceeds the {MAX_IMAGE_FILE_BYTES} byte limit; refusing to decode it"
+        )
+    with Image.open(image_path) as src:
+        pixels = src.width * src.height
+        if pixels > MAX_IMAGE_PIXELS or pixels * 4 > MAX_IMAGE_DECODED_BYTES:
+            raise ValueError("image dimensions exceed the safe decoding limit")
+        src.verify()
 
 
 def wrap_line(
@@ -96,6 +115,8 @@ def _sized_for_box(image_path, w: float, h: float):
     """
     from PIL import Image
 
+    image_path = Path(image_path)
+    validate_image(image_path)
     with Image.open(image_path) as src:   # context manager: don't leak the file handle
         img = src.convert("RGBA")
     cap = (max(1, round(w / 72 * STAMP_IMAGE_DPI)), max(1, round(h / 72 * STAMP_IMAGE_DPI)))
