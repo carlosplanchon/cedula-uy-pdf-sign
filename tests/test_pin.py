@@ -40,6 +40,18 @@ class TestGetPinStdin:
         monkeypatch.setattr("sys.stdin", io.StringIO(raw))
         assert get_pin(PinSource.stdin, env_var=None, fd=None) == expected
 
+    def test_tty_uses_getpass_to_suppress_echo(self, monkeypatch):
+        # When stdin is a TTY, the PIN must not echo to the screen.
+        stdin = io.StringIO("")
+        monkeypatch.setattr("sys.stdin", stdin)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+        calls = []
+        monkeypatch.setattr("getpass.getpass", lambda prompt: calls.append(prompt) or "5678")
+
+        assert get_pin(PinSource.stdin, env_var=None, fd=None) == "5678"
+        assert calls == ["Cédula PIN: "]
+
 
 class TestGetPinEmpty:
     @pytest.mark.parametrize("raw", ["\n", "\r\n", ""])  # blank line / CRLF / EOF
