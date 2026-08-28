@@ -17,15 +17,22 @@ class PinSource(str, Enum):
     fd = "fd"
 
 
+def _read_pin_interactive() -> str:
+    """Warn about the retry limit, then read the PIN with echo suppressed. Shared by every path
+    that ends up reading the PIN from a terminal: --pin-source prompt, and --pin-source stdin
+    when stdin turns out to be a TTY."""
+    typer.secho(
+        "Note: an incorrect PIN counts toward the card's retry limit and can block the cédula.",
+        fg=typer.colors.YELLOW,
+        err=True,
+    )
+    # The card's User PIN, the same PIN whichever backend (PKCS#11 or --native) asks for it.
+    return getpass.getpass("Cédula PIN: ")
+
+
 def get_pin(source: PinSource, env_var: Optional[str], fd: Optional[int]) -> str:
     if source == PinSource.prompt:
-        typer.secho(
-            "Note: an incorrect PIN counts toward the card's retry limit and can block the cédula.",
-            fg=typer.colors.YELLOW,
-            err=True,
-        )
-        # The card's User PIN, the same PIN whichever backend (PKCS#11 or --native) asks for it.
-        pin = getpass.getpass("Cédula PIN: ")
+        pin = _read_pin_interactive()
     elif source == PinSource.env:
         if not env_var:
             raise typer.BadParameter("--pin-source env requires --pin-env-var")
@@ -35,8 +42,8 @@ def get_pin(source: PinSource, env_var: Optional[str], fd: Optional[int]) -> str
         pin = val
     elif source == PinSource.stdin:
         if sys.stdin.isatty():
-            # A TTY echoes keystrokes; use getpass so the PIN stays off screen.
-            pin = getpass.getpass("Cédula PIN: ")
+            # A TTY echoes keystrokes; read as in --pin-source prompt so the PIN stays off screen.
+            pin = _read_pin_interactive()
         else:
             typer.echo("Reading PIN from stdin...", err=True)
             pin = sys.stdin.readline().rstrip("\r\n")

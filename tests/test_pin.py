@@ -40,8 +40,9 @@ class TestGetPinStdin:
         monkeypatch.setattr("sys.stdin", io.StringIO(raw))
         assert get_pin(PinSource.stdin, env_var=None, fd=None) == expected
 
-    def test_tty_uses_getpass_to_suppress_echo(self, monkeypatch):
-        # When stdin is a TTY, the PIN must not echo to the screen.
+    def test_tty_uses_getpass_to_suppress_echo(self, monkeypatch, capsys):
+        # When stdin is a TTY, the PIN must not echo to the screen, and the retry-limit
+        # warning must show exactly as with --pin-source prompt.
         stdin = io.StringIO("")
         monkeypatch.setattr("sys.stdin", stdin)
         monkeypatch.setattr("sys.stdin.isatty", lambda: True)
@@ -51,6 +52,7 @@ class TestGetPinStdin:
 
         assert get_pin(PinSource.stdin, env_var=None, fd=None) == "5678"
         assert calls == ["Cédula PIN: "]
+        assert "retry limit" in capsys.readouterr().err
 
 
 class TestGetPinEmpty:
