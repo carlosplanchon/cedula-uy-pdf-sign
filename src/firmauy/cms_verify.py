@@ -43,7 +43,11 @@ def _load_signed_data(p7s_bytes: bytes) -> asn1cms.SignedData:
             f"CMS signature exceeds the {MAX_CMS_BYTES} byte limit; refusing to parse it"
         )
     try:
-        ci = asn1cms.ContentInfo.load(p7s_bytes, strict=True)
+        # Deliberately not strict=True: strict rejects trailing bytes after the DER structure,
+        # and the parsers behind mainstream validators tolerate them (OpenSSL's d2i stops at the
+        # end of the structure, BouncyCastle likewise). Refusing here would make this verifier
+        # stricter than the official one over bytes no signature covers, the hybrid-xref lesson.
+        ci = asn1cms.ContentInfo.load(p7s_bytes)
         content_type = ci["content_type"].native
     except Exception as exc:
         raise ValueError(f"not a valid CMS/.p7s structure: {exc}") from exc
