@@ -35,10 +35,12 @@ from firmauy.verify_common import (
     note_trusted_time,
 )
 from firmauy.xml_sign import (
+    MAX_XML_BYTES,
     SIGNED_PROPS_TYPE,
     _c14n,
     _compute_enveloped_digest,
     _ds,
+    _secure_parser,
     _sha256_b64,
     _xades,
 )
@@ -163,7 +165,11 @@ def verify_xml(
     integrity (level 1). With `tsa_trust_roots` (from --tsa-ca) a XAdES-T timestamp's TSA is
     validated; on success the signing certificate is evaluated at the trusted genTime instead of now
     (validation at the sealed time, not the AdES -LT/-LTA levels)."""
-    root = etree.fromstring(xml_bytes)
+    if len(xml_bytes) > MAX_XML_BYTES:
+        raise ValueError(
+            f"XML input exceeds the {MAX_XML_BYTES} byte limit; refusing to parse it"
+        )
+    root = etree.fromstring(xml_bytes, parser=_secure_parser())
     sigs = root.findall(_ds("Signature"))
     if not sigs:
         return [VerifyResult("INVALID", [Check("signature present", False, "no <ds:Signature>")])]
