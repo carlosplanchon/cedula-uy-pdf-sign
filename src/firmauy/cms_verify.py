@@ -32,12 +32,18 @@ from firmauy.verify_common import (
     timestamp_of,
 )
 
+MAX_CMS_BYTES = 8 * 1024 * 1024
+
 
 def _load_signed_data(p7s_bytes: bytes) -> asn1cms.SignedData:
     """Parse a DER-encoded ``.p7s`` into its CMS SignedData. Raises ValueError if it
     is not a CMS SignedData structure."""
+    if len(p7s_bytes) > MAX_CMS_BYTES:
+        raise ValueError(
+            f"CMS signature exceeds the {MAX_CMS_BYTES} byte limit; refusing to parse it"
+        )
     try:
-        ci = asn1cms.ContentInfo.load(p7s_bytes)
+        ci = asn1cms.ContentInfo.load(p7s_bytes, strict=True)
         content_type = ci["content_type"].native
     except Exception as exc:
         raise ValueError(f"not a valid CMS/.p7s structure: {exc}") from exc

@@ -315,7 +315,9 @@ def verify(
         _detect_signature_kind,
         _resolve_trust_anchors,
         _resolve_tsa_anchors,
+        read_bounded,
     )
+    from firmauy.cms_verify import MAX_CMS_BYTES
 
     path = Path(path)
     kind = _detect_signature_kind(path)
@@ -341,7 +343,7 @@ def verify(
                 p7s_path=path, expected=orig,
             )
         with orig.open("rb") as data:
-            results = [verify_cms(data, path.read_bytes(), trust_roots=roots,
+            results = [verify_cms(data, read_bounded(path, MAX_CMS_BYTES, "CMS signature"), trust_roots=roots,
                                   intermediates=intermediates, check_revocation=check_revocation,
                                   tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)]
 
